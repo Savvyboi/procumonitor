@@ -1,0 +1,66 @@
+name: Refresh data and publish GitHub Pages
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+concurrency:
+  group: procurement-pages
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - name: Refresh official notices and company records
+        if: github.event_name != 'push'
+        env:
+          HILMA_API_KEY: ${{ secrets.HILMA_API_KEY }}
+        run: |
+          npm run ingest
+          node scripts/enrich-eforms.mjs
+      - name: Refresh weekly invoice aggregates
+        if: github.event_name != 'push'
+        run: node scripts/ingest-spending.mjs
+      - name: Commit refreshed snapshots
+        if: github.event_name != 'push'
+        run: |
+          git config user.name "procumonitor-data[bot]"
+          git config user.email "procumonitor-data[bot]@users.noreply.github.com"
+          git add public/data
+          if ! git diff --cached --quiet; then
+            git commit -m "data: refresh official procurement snapshot"
+            git push
+          fi
+      - uses: actions/configure-pages@v5
+        id: pages
+      - name: Build static website, exports, feeds and Pagefind index
+        env:
+          BASE_PATH: ${{ steps.pages.outputs.base_path }}/
+          SITE_URL: ${{ steps.pages.outputs.base_url }}/
+        run: npm run build
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Publish
+        id: deployment
+        uses: actions/deploy-pages@v4
