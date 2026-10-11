@@ -23,3 +23,5 @@ test('decodes eForms XML estimates and tender counts without contact records',()
 });
 test('rejects DTD/entity payloads and malformed full content',()=>{assert.throws(()=>enrichFromXml(normalize(raw,now),encode('<!DOCTYPE x [<!ENTITY x "secret">]><x/>')));assert.throws(()=>enrichFromXml(normalize(raw,now),encode('not xml')));});
 test('mixed award/estimate currencies do not produce a near-budget flag',()=>{const n=normalize({...raw,mainType:'ContractAwardNotices',estimatedValue:100,currency:'EUR',noticeResultTotalAmount:97,noticeResultTotalAmountCurrency:'SEK'},now);assert.ok(!n.flags.includes('near-budget'));});
+
+test('procurement plans use the official public plan route',()=>{assert.equal(normalize({...raw,isPlan:true,planId:789},now).sourceUrl,'https://www.hankintailmoitukset.fi/fi/public/plan/789');});
