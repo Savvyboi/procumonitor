@@ -1,20 +1,30 @@
 <!doctype html>
-<html lang="en">
+<html lang="fi">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#173f37" />
+    <meta name="theme-color" content="#194b3b" />
     <meta
       name="description"
-      content="Explore Finnish public procurement. Search official Hilma notices, follow buyers, and make sense of public money. Independent, open-source civic technology."
+      content="Tutki Suomen julkisia hankintoja. Hae virallisia Hilma-ilmoituksia, seuraa hankintayksiköitä ja ymmärrä yhteisten rahojen käyttöä."
     />
-    <title>Avoin — Finnish procurement, in the open</title>
+    <script>
+      try {
+        document.documentElement.dataset.theme =
+          localStorage.getItem("tilimyyra-theme") ||
+          (matchMedia("(prefers-color-scheme: dark)").matches
+            ? "dark"
+            : "light");
+      } catch {}
+    </script>
+    <title>Tilimyyrä — Julkiset hankinnat päivänvaloon</title>
     <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
   </head>
   <body>
     <div id="root"></div>
     <noscript
-      >This explorer needs JavaScript. Download the public data at
+      >Haku tarvitsee JavaScriptin. / Sökningen kräver JavaScript. / This
+      explorer needs JavaScript. Data:
       <a href="./data/notices.json">notices.json</a> or
       <a href="./exports/notices.csv">notices.csv</a>.</noscript
     >

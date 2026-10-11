@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="fi">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width" />
+    <title>Koko tekstin haku — Tilimyyrä</title>
+    <link rel="icon" href="./favicon.svg" />
+    <link href="./pagefind/pagefind-ui.css" rel="stylesheet" />
+    <link href="./static-pages.css" rel="stylesheet" />
+  </head>
+  <body>
+    <header>
+      <a href="./" data-explorer-link
+        ><img src="./mole.svg" alt="" />tilimyyrä</a
+      >
+      <div>
+        <select id="language" aria-label="Käyttöliittymän kieli">
+          <option value="fi">Suomi</option>
+          <option value="sv">Svenska</option>
+          <option value="en">English</option></select
+        ><button id="theme" aria-label="Tumma teema">☾</button>
+      </div>
+    </header>
+    <main data-pagefind-ignore>
+      <a class="back" href="./" data-explorer-link data-i18n="back"
+        >← Takaisin hankintahakuun</a
+      ><span class="eyebrow" data-i18n="searchEyebrow"
+        >JOKAINEN ILMOITUS. JOKAINEN SANA.</span
+      >
+      <h1 data-i18n="searchTitle">Koko tekstin haku</h1>
+      <p data-i18n="searchLead">
+        Hae kaikkien tuotujen ilmoitusten koko kuvauksista. Viralliset tekstit
+        ovat alkuperäisellä kielellä.
+      </p>
+      <div id="search"></div>
+      <noscript
+        >JavaScript tarvitaan hakua varten. / JavaScript krävs för sökning. /
+        JavaScript is required for search.
+        <a href="./exports/notices.csv">CSV</a></noscript
+      >
+    </main>
+    <script src="./pagefind/pagefind-ui.js"></script>
+    <script src="./static-pages.js"></script>
+  </body>
+</html>

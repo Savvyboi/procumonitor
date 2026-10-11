@@ -1,11 +1,16 @@
-# Avoin — Finnish procurement, in the open
+# Tilimyyrä — bringing Finnish public procurement to light
 
 An independent, open-source procurement observatory built for GitHub Pages. React + Vite + TypeScript, with official data collected by GitHub Actions. No paid services or backend server.
 
 ## What works
 
 - Live Hilma notices, planning notices, awards and closed/cancelled notices.
-- Search by title, buyer, Business ID, CPV and description; region/category/status/value/date filters.
+- Finnish, Swedish and English interfaces, with localized dates, numbers, categories and statuses. Official notice text stays in its original language.
+- Persistent light/dark themes in forest green, brown, cream and blue-black, with a European mole (kontiainen) mascot.
+- Accent-insensitive all-word, any-word and exact-phrase search across notice identifiers, titles, buyers, Business IDs, reported awardees, descriptions and CPV codes; field-specific search is available.
+- Category directory and shortcuts based on official CPV classification.
+- Region, category, status, exact buyer, buyer type, procedure, CPV-prefix, signal, publication-date, deadline-date and earlier-version filters.
+- Separate estimate/award EUR ranges and reported/missing-value filters; ten sorting choices and adjustable page sizes. Search settings, sorting and language are shareable in URLs.
 - Notice details, lot-level competition fields, official source links and shareable URLs.
 - Buyer directory and cached PRH company enrichment where the register has coverage.
 - Actual invoice spending, aggregated from the official Tutkihankintoja annual download.
@@ -80,7 +85,7 @@ Unknown values never become zero. Indicators are prompts to investigate, not acc
 - data/spending.json — invoice aggregates.
 - data/manifest.json — all daily/monthly shard and RSS feed paths.
 - exports/notices.csv and exports/notices.json — full downloadable snapshot.
-- feeds/all.xml, feeds/regions/*.xml and feeds/buyers/*.xml — 100 newest matching notices.
+- feeds/all.xml, feeds/regions/_.xml and feeds/buyers/_.xml — 100 newest matching notices.
 - notices/*.html — static full-description pages indexed by Pagefind.
 - pagefind/ — generated multilingual-capable browser search index.
 
@@ -94,6 +99,12 @@ npm run build type-checks, builds the static application, generates artifacts an
 ## Licence
 
 Application code: MIT (see LICENSE).
-Official data retains its respective source terms; PRH and State Treasury data require CC BY 4.0 attribution. Attribution is displayed in the application. Avoin is not affiliated with the Finnish government.
+Official data retains its respective source terms; PRH and State Treasury data require CC BY 4.0 attribution. Attribution is displayed in the application. Tilimyyrä is not affiliated with the Finnish government.
 
-Geographic outline: Natural Earth, public domain. The overview map is illustrative; use the region filters for the reported NUTS geography.
+## Interface preferences and discovery
+
+Finnish is the default. Use the language selector for Swedish or English; language, theme and saved notices persist locally when browser storage is available. Existing Avoin bookmarks migrate automatically. The theme follows the system preference on first visit and can then be changed with the theme button.
+
+Use **More filters / Tarkempi haku / Avancerad sökning** for advanced search. Search matches words without case or accent sensitivity; exact phrase matches consecutive text. Buyer filtering uses an exact organisation name from the suggestions. CPV accepts a full code or prefix. Date boundaries include the entire selected day in Europe/Helsinki. Value limits exclude missing amounts and non-EUR currencies; zero remains a reported value. Value sorting compares EUR amounts only and places other currencies and missing values last. Estimates and awards stay separate. Category cards and overview totals describe the latest notice versions in the full snapshot, while result counts and downloads follow the active filters.
+
+All discovery settings, sorting, page size and language survive copying or reloading the URL. The separate Pagefind search page and indexed notice summaries also offer all three interface languages and both themes. Official buyer, supplier and spending-category names retain their source wording. Static search indexes the original notice text; it does not translate documents.

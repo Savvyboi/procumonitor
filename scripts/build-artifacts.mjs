@@ -56,7 +56,7 @@ async function feed(title, notices, file) {
     xml(title) +
     "</title><link>" +
     xml(site || "https://www.hankintailmoitukset.fi") +
-    "</link><description>Official Hilma notice summaries collected by Avoin. Rolling " +
+    "</link><description>Official Hilma notice summaries collected by Tilimyyrä. Rolling " +
     data.windowDays +
     " day window.</description><language>fi</language>" +
     notices
@@ -81,7 +81,7 @@ async function feed(title, notices, file) {
   manifest.feeds.push({ title, file, count: notices.length });
 }
 await feed(
-  "Avoin — all Finnish procurement notices",
+  "Tilimyyrä — all Finnish procurement notices",
   data.notices,
   "feeds/all.xml",
 );
@@ -98,30 +98,34 @@ for (const type of [...new Set(data.notices.map((n) => n.buyerType))])
     "feeds/buyers/" + slug(type) + ".xml",
   );
 for (const n of data.notices) {
-  const value =
-    n.estimatedValue === null
-      ? "Not reported"
-      : n.estimatedValue + " " + (n.estimatedCurrency || "unknown currency");
   const html =
-    '<!doctype html><html lang="fi"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>' +
+    '<!doctype html><html lang="fi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>' +
     xml(n.title) +
-    ' | Avoin</title><style>body{margin:0;background:#f7f9f2;color:#38512e;font:14px/1.9 system-ui,sans-serif}main{max-width:800px;margin:40px auto;padding:35px;background:#fff;border:1px solid #e0e8d6;border-radius:10px}h1{font-size:30px;line-height:1.4;letter-spacing:-1px;font-weight:500}p{white-space:pre-line;color:#849775}a{color:#416736;text-decoration:none;border-bottom:1px solid #bdcfae}a:hover{color:#243d1c}@media(max-width:600px){main{margin:15px;padding:23px}h1{font-size:25px}}</style><main data-pagefind-body><a href="../" data-pagefind-ignore>Avoin · Back to the explorer</a><h1>' +
+    ' | Tilimyyrä</title><link rel="icon" href="../favicon.svg"><link rel="stylesheet" href="../static-pages.css"></head><body><header><a href="../" data-explorer-link><img src="../mole.svg" alt="">tilimyyrä</a><div><select id="language" aria-label="Käyttöliittymän kieli"><option value="fi">Suomi</option><option value="sv">Svenska</option><option value="en">English</option></select><button id="theme" aria-label="Tumma teema">☾</button></div></header><main data-pagefind-body><a class="back" href="../" data-explorer-link data-pagefind-ignore data-i18n="back">← Takaisin hankintahakuun</a><h1>' +
     xml(n.title) +
     "</h1><p>" +
     xml(n.buyer) +
     " · " +
-    xml(n.region) +
+    xml(n.regions.join(", ")) +
     " · " +
     xml(n.category) +
-    "</p><p>" +
+    '</p><p class="original" data-pagefind-ignore data-i18n="original">Virallinen teksti on alkuperäisellä kielellä.</p><p class="description">' +
     xml(n.description) +
-    "</p><p>Estimated value: " +
-    xml(value) +
-    '</p><a href="../?notice=' +
+    '</p><p data-pagefind-ignore><span data-i18n="estimate">Arvioitu arvo</span>: <span data-value="' +
+    xml(n.estimatedValue ?? "") +
+    '" data-currency="' +
+    xml(n.estimatedCurrency ?? "") +
+    '">' +
+    xml(
+      n.estimatedValue === null
+        ? "Ei ilmoitettu"
+        : n.estimatedValue + " " + (n.estimatedCurrency || ""),
+    ) +
+    '</span></p><div class="actions" data-pagefind-ignore><a href="../?notice=' +
     encodeURIComponent(n.id) +
-    '">Open in explorer</a><p><a href="' +
+    '" data-explorer-link data-i18n="open">Avaa hankintahaussa</a><a href="' +
     xml(n.sourceUrl) +
-    '">Official Hilma notice</a></p></main></html>';
+    '" data-i18n="official">Virallinen Hilma-ilmoitus</a></div></main><script src="../static-pages.js"></script></body></html>';
   await writeFile("dist/notices/" + encodeURIComponent(n.id) + ".html", html);
 }
 await writeFile("dist/data/manifest.json", JSON.stringify(manifest));
@@ -130,6 +134,7 @@ console.log(
   "Built exports, compressed daily/monthly data, RSS feeds and searchable notice pages.",
 );
 
-const searchHtml =
-  '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Full-text search — Avoin</title><link href="./pagefind/pagefind-ui.css" rel="stylesheet"><style>:root{--pagefind-ui-primary:#28553e;--pagefind-ui-text:#4e6640;--pagefind-ui-background:#fff;--pagefind-ui-border:#dce6cf;--pagefind-ui-tag:#edf3e3;--pagefind-ui-font:system-ui,sans-serif}*{box-sizing:border-box}body{margin:0;background:#f7f9f1;color:#35512b;font-family:system-ui,sans-serif}header{border-bottom:1px solid #e0e8d6;padding:24px 8%;display:flex;align-items:center;justify-content:space-between}a{color:#567746;text-decoration:none;font-size:13px}b{font-size:29px;letter-spacing:-1.5px}main{max-width:1000px;padding:45px 25px;margin:auto}small{letter-spacing:2px;font-size:10px;color:#90a17d}h1{font-size:42px;font-weight:500;letter-spacing:-1.5px;line-height:1.2}p{color:#93a17f;line-height:1.8;font-size:13px;margin-bottom:30px}.pagefind-ui__result-link{font-weight:500!important}.pagefind-ui__result-excerpt{color:#94a37f!important}@media(max-width:600px){h1{font-size:32px}header{padding:20px}main{padding-top:30px}}</style></head><body><header><a href="./"><b>avoin.</b></a><a href="./">← Back to the explorer</a></header><main data-pagefind-ignore><small>EVERY NOTICE. EVERY WORD.</small><h1>Follow your curiosity.</h1><p>Search the full descriptions of all imported notices. Results open the indexed source summary, with a link back to the explorer and the official Hilma notice.</p><div id="search"></div><noscript>JavaScript is required for full-text search. <a href="./exports/notices.csv">Download CSV</a></noscript></main><script src="./pagefind/pagefind-ui.js"></script><script>new PagefindUI({element:"#search",showSubResults:false,showImages:false,resetStyles:true});</script></body></html>';
-await writeFile("dist/search.html", searchHtml);
+await writeFile(
+  "dist/search.html",
+  await readFile("scripts/templates/search.html", "utf8"),
+);

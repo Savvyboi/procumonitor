@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   ArrowDownToLine,
   ArrowRight,
@@ -6,81 +6,102 @@ import {
   Bookmark,
   Building2,
   Check,
-  ChevronDown,
   ChevronLeft,
   ChevronRight,
   CircleHelp,
   Database,
   ExternalLink,
-  FileText,
   Flag,
   Globe2,
   Layers3,
   Menu,
+  Moon,
   Rss,
   Search,
   SlidersHorizontal,
-  TrendingUp,
+  Sun,
   Wallet,
   X,
 } from "lucide-react";
 import type { Company, Dataset, Notice, Spending } from "./types";
-const BASE = import.meta.env.BASE_URL,
-  day = 86400000;
-async function loadNotices() {
-  if ("DecompressionStream" in window) {
-    try {
-      const r = await fetch(BASE + "data/notices.json.gz");
-      if (r.ok && r.body)
-        return await new Response(
-          r.body.pipeThrough(new DecompressionStream("gzip")),
-        ).json();
-    } catch {}
-  }
-  const r = await fetch(BASE + "data/notices.json");
-  if (!r.ok) throw Error("Snapshot unavailable");
-  return r.json();
-}
-const flags: Record<string, string> = {
-  "single-bid": "Single-bid award",
-  "short-window": "Short response window",
-  "near-budget": "Award near estimate",
-};
-const fmt = (n: number) => new Intl.NumberFormat("en-GB").format(n);
-function money(
-  n: number | null,
-  currency: string | null = "EUR",
-  compact = true,
-) {
-  if (n === null) return "Not reported";
-  if (!currency) return fmt(n) + " (currency unknown)";
-  try {
-    return new Intl.NumberFormat("en-GB", {
-      style: "currency",
-      currency,
-      notation: compact ? "compact" : "standard",
-      maximumFractionDigits: compact ? 1 : 0,
-    }).format(n);
-  } catch {
-    return fmt(n) + " " + currency;
-  }
-}
-const date = (s: string | null, full = false) =>
-  s
-    ? new Intl.DateTimeFormat("en-GB", {
-        day: "numeric",
-        month: "short",
-        ...(full ? { year: "numeric" } : {}),
-        timeZone: "Europe/Helsinki",
-      }).format(new Date(s))
-    : "Not reported";
-const slug = (v: string) =>
-  v
-    .normalize("NFKD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase()
+import { LanguageContext, useI18n, type Language } from "./i18n";
+import {
+  defaults,
+  fold,
+  matchesFilters,
+  matchesQuery,
+  readFilters,
+  searchText,
+  sortNotices,
+  sorts,
+  writeFilters,
+  type Filters,
+} from "./lib/discovery";
+
+const BASE = import.meta.env.BASE_URL;
+const views = [
+  "explore",
+  "categories",
+  "buyers",
+  "spending",
+  "signals",
+  "saved",
+  "about",
+];
+const signals = ["single-bid", "short-window", "near-budget"];
+const statuses = [
+  "Active",
+  "Awarded",
+  "Planning",
+  "Closed",
+  "Cancelled",
+  "Other",
+];
+const slug = (value: string) =>
+  fold(value)
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-|-$/g, "");
+function stored(key: string) {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+function initialLanguage(): Language {
+  const value =
+    new URLSearchParams(location.search).get("lang") ||
+    stored("tilimyyra-language");
+  return value === "sv" || value === "en" ? value : "fi";
+}
+function initialSaved(): string[] {
+  try {
+    const value: unknown = JSON.parse(
+      stored("tilimyyra-saved") || stored("avoin-saved") || "[]",
+    );
+    return Array.isArray(value)
+      ? value.filter((id): id is string => typeof id === "string")
+      : [];
+  } catch {
+    return [];
+  }
+}
+async function loadNotices(): Promise<Dataset> {
+  if ("DecompressionStream" in window) {
+    try {
+      const response = await fetch(BASE + "data/notices.json.gz");
+      if (response.ok && response.body)
+        return await new Response(
+          response.body.pipeThrough(new DecompressionStream("gzip")),
+        ).json();
+    } catch {
+      /* The uncompressed snapshot also works in older browsers. */
+    }
+  }
+  const response = await fetch(BASE + "data/notices.json");
+  if (!response.ok) throw new Error("Snapshot unavailable");
+  return response.json();
+}
 function exportData(notices: Notice[], kind: "csv" | "json") {
   const keys = [
     "id",
@@ -88,24 +109,27 @@ function exportData(notices: Notice[], kind: "csv" | "json") {
     "buyer",
     "businessId",
     "buyerType",
-    "region",
+    "regions",
     "category",
+    "cpvCodes",
     "status",
     "published",
+    "modified",
     "deadline",
     "estimatedValue",
-    "awardedValue",
     "estimatedCurrency",
+    "awardedValue",
     "awardedCurrency",
-    "currency",
     "winners",
     "flags",
     "sourceUrl",
   ] as const;
-  const cell = (v: unknown) => {
-    const s = Array.isArray(v) ? v.join("; ") : String(v ?? "");
+  const cell = (value: unknown) => {
+    const text = Array.isArray(value) ? value.join("; ") : String(value ?? "");
     return (
-      '"' + (/^\s*[=+@-]/.test(s) ? "'" + s : s).replaceAll('"', '""') + '"'
+      '"' +
+      (/^\s*[=+@-]/.test(text) ? "'" + text : text).replaceAll('"', '""') +
+      '"'
     );
   };
   const content =
@@ -120,454 +144,539 @@ function exportData(notices: Notice[], kind: "csv" | "json") {
       type: kind === "json" ? "application/json" : "text/csv;charset=utf-8;",
     }),
   );
-  const a = document.createElement("a");
-  a.href = url;
-  a.download =
-    "avoin-notices-" + new Date().toISOString().slice(0, 10) + "." + kind;
-  a.click();
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download =
+    "tilimyyra-notices-" + new Date().toISOString().slice(0, 10) + "." + kind;
+  anchor.click();
   setTimeout(() => URL.revokeObjectURL(url), 500);
 }
-function Logo() {
+function Mole({ small = false }: { small?: boolean }) {
+  const { t } = useI18n();
   return (
-    <span className="brand-mark" aria-hidden="true">
-      <svg viewBox="0 0 32 32">
-        <path d="M5 26 14 6h5l9 20h-6L16.5 13 11 26z" fill="currentColor" />
-        <circle cx="16.5" cy="25" r="3" fill="currentColor" />
-      </svg>
-    </span>
+    <img
+      className={small ? "mole-mark" : "mole-hero"}
+      src={BASE + "mole.svg"}
+      alt={small ? "" : t("mascot")}
+      width={small ? 48 : 260}
+      height={small ? 40 : 220}
+    />
   );
 }
 function Status({ value }: { value: string }) {
+  const { t } = useI18n();
   return (
     <span className={"status " + value.toLowerCase()}>
       <i />
-      {value}
+      {t(value)}
     </span>
   );
 }
-function Finland() {
-  return (
-    <svg className="finland" viewBox="0 0 160 250" aria-hidden="true">
-      <defs>
-        <pattern
-          id="mapgrid"
-          width="12"
-          height="12"
-          patternUnits="userSpaceOnUse"
-        >
-          <path
-            d="M12 0H0V12"
-            fill="none"
-            stroke="#ffffff15"
-            strokeWidth=".6"
-          />
-        </pattern>
-      </defs>
-      <rect width="160" height="250" fill="url(#mapgrid)" />
-      <path
-        d="M96.0 36.0L94.6 51.2L109.2 65.8L100.4 82.2L111.5 107.0L105.1 125.7L113.7 142.0L109.8 156.2L123.9 171.1L120.3 182.2L111.4 194.8L91.0 222.7L91.0 222.7L91.0 222.7L73.6 224.4L56.8 232.4L41.3 237.0L35.7 225.1L26.5 217.9L28.6 196.5L24.0 176.8L28.5 164.1L37.2 150.4L59.0 126.7L65.4 122.2L64.4 113.0L51.1 102.7L47.9 94.2L47.7 60.6L32.7 45.7L20.0 35.1L25.7 29.3L36.4 40.8L48.8 39.8L59.1 45.0L68.2 35.4L72.9 19.4L87.7 12.0L100.0 20.7L96.0 36.0Z"
-        fill="#b6d0bd"
-        stroke="#dcf0cf"
-        strokeWidth="1.2"
-      />
-      <circle cx="61.0" cy="229.9" r="4" fill="#e8f3b8" />
-      <circle cx="35.5" cy="223.8" r="3" fill="#e8f3b8" />
-      <circle cx="49.8" cy="201.0" r="3" fill="#e8f3b8" />
-      <circle cx="66.1" cy="124.4" r="3" fill="#e8f3b8" />
-    </svg>
-  );
-}
-function NoticeDialog({
-  n,
+function Modal({
+  children,
+  title,
   onClose,
-  saved,
-  onSave,
-  companies,
+  wide = false,
 }: {
-  n: Notice;
+  children: ReactNode;
+  title: string;
   onClose: () => void;
-  saved: boolean;
-  onSave: () => void;
-  companies: Record<string, Company>;
+  wide?: boolean;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
+  const { t } = useI18n();
   useEffect(() => {
     ref.current?.showModal();
   }, []);
-  const company = n.businessId ? companies[n.businessId] : null;
   return (
     <dialog
       ref={ref}
-      className="notice-dialog"
+      className={"modal " + (wide ? "wide" : "")}
+      aria-labelledby="modal-title"
       onCancel={onClose}
       onClick={(e) => {
         if (e.target === ref.current) onClose();
       }}
     >
-      <div className="dialog-top">
-        <span className="eyebrow">OFFICIAL NOTICE · {n.noticeNumber}</span>
+      <div className="modal-top">
+        <span id="modal-title" className="eyebrow">
+          {title}
+        </span>
         <button
           className="icon-button"
           onClick={onClose}
-          aria-label="Close notice"
+          aria-label={t("close")}
         >
-          <X size={21} />
+          <X size={22} />
         </button>
       </div>
-      <div className="dialog-content">
-        <Status value={n.status} />
-        {n.superseded && <span className="muted"> · Earlier version</span>}
+      {children}
+    </dialog>
+  );
+}
+function NoticeDialog({
+  n,
+  companies,
+  saved,
+  onSave,
+  onClose,
+}: {
+  n: Notice;
+  companies: Record<string, Company>;
+  saved: boolean;
+  onSave: () => void;
+  onClose: () => void;
+}) {
+  const { t, money, date, fmt } = useI18n();
+  const company = n.businessId ? companies[n.businessId] : null;
+  return (
+    <Modal
+      title={t("officialNotice") + " · " + n.noticeNumber}
+      onClose={onClose}
+      wide
+    >
+      <div className="modal-content">
+        <Status value={n.status} />{" "}
+        {n.superseded && <span className="muted">{t("earlier")}</span>}
         <h2>{n.title}</h2>
         <p className="buyer-line">
-          <Building2 size={17} />
+          <Building2 size={18} />
           {n.buyer}
         </p>
         <div className="detail-grid">
           {[
             [
-              "Estimated value",
+              t("estimate"),
               money(n.estimatedValue, n.estimatedCurrency, false),
             ],
-            ["Awarded value", money(n.awardedValue, n.awardedCurrency, false)],
-            ["Published", date(n.published, true)],
-            [
-              "Deadline (Helsinki)",
-              n.deadline
-                ? new Intl.DateTimeFormat("en-GB", {
-                    dateStyle: "medium",
-                    timeStyle: "short",
-                    timeZone: "Europe/Helsinki",
-                  }).format(new Date(n.deadline))
-                : "Not reported",
-            ],
-            ["Region", n.regions.join(", ")],
-            ["Procedure", n.procedure],
-            ["Buyer business ID", n.businessId || "Not reported"],
-            ["Category", n.category],
-          ].map(([k, v]) => (
-            <div key={k}>
-              <small>{k}</small>
-              <strong>{v}</strong>
+            [t("award"), money(n.awardedValue, n.awardedCurrency, false)],
+            [t("published"), date(n.published)],
+            [t("modifiedDate"), date(n.modified)],
+            [t("deadlineHelsinki"), date(n.deadline, true)],
+            [t("region"), n.regions.map((r) => t(r)).join(", ")],
+            [t("procedure"), t(n.procedure)],
+            [t("businessId"), n.businessId || t("unknown")],
+            [t("category"), t(n.category)],
+            [t("buyerType"), t(n.buyerType)],
+          ].map(([key, value]) => (
+            <div key={key}>
+              <small>{key}</small>
+              <strong>{value}</strong>
             </div>
           ))}
         </div>
         {n.flags.length > 0 && (
-          <div className="notice-flags">
-            <Flag size={17} />
+          <div className="callout signal-callout">
+            <Flag size={20} />
             <div>
-              <strong>Worth a closer look</strong>
+              <strong>{t("signalDefinitions")}</strong>
               {n.flags.map((f) => (
-                <p key={f}>{flags[f]}</p>
+                <p key={f}>
+                  {t(f)}:{" "}
+                  {t(
+                    f === "single-bid"
+                      ? "singleDefinition"
+                      : f === "short-window"
+                        ? "shortDefinition"
+                        : "nearDefinition",
+                  )}
+                </p>
               ))}
-              <small>
-                Screening signals, not evidence of wrongdoing. Check the
-                original notice and amendments.
-              </small>
+              <small>{t("disclaimer")}</small>
             </div>
           </div>
         )}
-        <h3>What is being procured?</h3>
-        <p className="description" lang="fi">
-          {n.description ||
-            "No description was supplied. Read the full notice on Hilma."}
-        </p>
-        <h3>Classification</h3>
-        <p className="cpvs">
-          {n.cpvCodes.map((c) => (
-            <code key={c}>{c}</code>
-          ))}
-        </p>
+        <h3>{t("description")}</h3>
+        <p className="original-note">{t("original")}</p>
+        <p className="description">{n.description || t("noDescription")}</p>
+        <h3>{t("classification")}</h3>
+        <div className="cpvs">
+          {n.cpvCodes.length
+            ? n.cpvCodes.map((c) => <code key={c}>{c}</code>)
+            : t("unknown")}
+        </div>
         {n.winners.length > 0 && (
           <>
-            <h3>Reported awardees</h3>
+            <h3>{t("awardees")}</h3>
             <p>{n.winners.join("; ")}</p>
           </>
         )}
         {n.lots.length > 0 && (
           <>
-            <h3>Lots & competition</h3>
+            <h3>{t("lots")}</h3>
             <div className="lot-list">
               {n.lots.map((l) => (
                 <div key={l.id}>
                   <strong>{l.title || l.id}</strong>
                   <span>
                     {l.bids === null
-                      ? "Bid count not reported"
-                      : fmt(l.bids) + " bids"}{" "}
-                    · {money(l.awardedValue, l.awardedCurrency ?? null)}
+                      ? t("unknownBids")
+                      : t("bids", { count: fmt(l.bids) })}
                   </span>
+                  <small>
+                    {t("estimate")}:{" "}
+                    {money(l.estimatedValue, l.estimatedCurrency)} ·{" "}
+                    {t("award")}: {money(l.awardedValue, l.awardedCurrency)}
+                  </small>
                 </div>
               ))}
             </div>
           </>
         )}
         {company?.found && (
-          <div className="company-note">
-            <Building2 size={18} />
+          <div className="callout">
+            <Building2 size={20} />
             <div>
               <strong>{company.name}</strong>
               <p>{[company.form, company.city].filter(Boolean).join(" · ")}</p>
-              <small>PRH / YTJ · checked {date(company.checkedAt, true)}</small>
+              <small>
+                PRH / YTJ · {t("updated")} {date(company.checkedAt)}
+              </small>
             </div>
           </div>
         )}
-        <p className="source-note">
-          Source: Hilma search index and available eForms enrichment. Missing
-          values are unknown. Descriptions use the original language. Full legal
-          notices and documents remain on Hilma.
-        </p>
+        <p className="source-note">{t("noticeSource")}</p>
       </div>
-      <div className="dialog-footer">
+      <div className="modal-footer">
         <button className="button secondary" onClick={onSave}>
           <Bookmark size={16} fill={saved ? "currentColor" : "none"} />
-          {saved ? "Saved" : "Save notice"}
+          {t(saved ? "unsave" : "save")}
         </button>
+        {n.documentsUrl && (
+          <a
+            className="text-link"
+            href={n.documentsUrl}
+            target="_blank"
+            rel="noreferrer"
+          >
+            {t("documents")}
+            <ExternalLink size={15} />
+          </a>
+        )}
         <a
           className="button primary"
           href={n.sourceUrl}
           target="_blank"
           rel="noreferrer"
         >
-          Read on Hilma
+          {t("readHilma")}
           <ArrowUpRight size={17} />
         </a>
       </div>
-    </dialog>
+    </Modal>
   );
 }
-function About() {
+function Pagination({
+  page,
+  count,
+  size,
+  onChange,
+}: {
+  page: number;
+  count: number;
+  size: number;
+  onChange: (page: number) => void;
+}) {
+  const { t, fmt } = useI18n();
+  const pages = Math.max(1, Math.ceil(count / size));
+  if (!count) return null;
   return (
-    <div className="reading-page">
-      <span className="eyebrow">BUILT FOR PUBLIC CURIOSITY</span>
-      <h1>
-        Open data.
-        <br />
-        An informed public.
-      </h1>
-      <p className="reading-lead">
-        Avoin brings Finnish procurement into focus. An independent, open-source
-        civic tool for journalists, businesses and anyone curious about public
-        money.
-      </p>
-      <div className="about-grid">
-        <article>
-          <Database />
-          <h2>Official sources</h2>
-          <p>
-            Notices come from Hilma’s AVP Read Search API. Company records come
-            from PRH / YTJ. Invoice totals are aggregated from the State
-            Treasury’s Tutkihankintoja downloads.
-          </p>
-          <a
-            href="https://github.com/Hankintailmoitukset/hilma-api/blob/master/endpoints/avpendpoints.md"
-            target="_blank"
-            rel="noreferrer"
-          >
-            Hilma API documentation <ExternalLink size={14} />
-          </a>
-          <a
-            href="https://avoindata.prh.fi/fi/ytj/swagger-ui"
-            target="_blank"
-            rel="noreferrer"
-          >
-            PRH API documentation <ExternalLink size={14} />
-          </a>
-          <a
-            href="https://avoindata.suomi.fi/data/fi/dataset/ba96a638-67bf-4747-b084-c78ccfe052e9"
-            target="_blank"
-            rel="noreferrer"
-          >
-            Official invoice dataset <ExternalLink size={14} />
-          </a>
-        </article>
-        <article>
-          <Flag />
-          <h2>Signals, with context</h2>
-          <p>
-            <b>Single-bid award:</b> an award notice reports exactly one
-            received tender in at least one lot. Unknown counts never trigger
-            this flag.
-          </p>
-          <p>
-            <b>Short window:</b> fewer than 14 days between this notice’s
-            publication and deadline. Amendments can shorten that interval.
-          </p>
-          <p>
-            <b>Near estimate:</b> an EUR award is 95–100% of the reported
-            notice-level estimate. Missing values and other currencies are
-            excluded.
-          </p>
-          <p>
-            These indicators invite investigation. They do not establish
-            wrongdoing.
-          </p>
-        </article>
-        <article>
-          <Layers3 />
-          <h2>Know the limits</h2>
-          <p>
-            A rolling 180-day publication window. Counts refer to notices, not
-            unique contracts. Earlier versions are excluded when a later notice
-            explicitly links to them.
-          </p>
-          <p>
-            Not every notice has a value. Missing bid counts mean unknown.
-            Closed deadlines do not imply an award.
-          </p>
-          <p>
-            Region uses the place of performance, with buyer location as a
-            fallback. PRH excludes municipalities, wellbeing services counties
-            and sole traders.
-          </p>
-        </article>
-        <article>
-          <Wallet />
-          <h2>Spending has its own story</h2>
-          <p>
-            Invoice accounting lines include credit notes and cover central
-            government and selected local organisations. They do not represent
-            all Finnish public spending.
-          </p>
-          <p>
-            Without a shared contract identifier, we do not attribute an invoice
-            to a specific tender.
-          </p>
-          <p>
-            Source attribution: Hilma; Finnish Patent and Registration Office
-            (PRH); State Treasury / Tutkihankintoja, CC BY 4.0 where applicable.
-            Avoin is not an official government service.
-          </p>
-        </article>
+    <div className="pagination">
+      <span>
+        {t("showing", {
+          from: fmt((page - 1) * size + 1),
+          to: fmt(Math.min(page * size, count)),
+          count: fmt(count),
+        })}
+      </span>
+      <div>
+        <button
+          className="icon-button"
+          disabled={page <= 1}
+          onClick={() => onChange(page - 1)}
+          aria-label={t("previous")}
+        >
+          <ChevronLeft size={18} />
+        </button>
+        <span>
+          {t("page")} {page} / {pages}
+        </span>
+        <button
+          className="icon-button"
+          disabled={page >= pages}
+          onClick={() => onChange(page + 1)}
+          aria-label={t("next")}
+        >
+          <ChevronRight size={18} />
+        </button>
       </div>
     </div>
   );
 }
+function About() {
+  const { t } = useI18n();
+  return (
+    <section className="reading-page">
+      <span className="eyebrow">TILIMYYRÄ</span>
+      <h1>{t("aboutHeading")}</h1>
+      <p className="page-lead">{t("aboutBody")}</p>
+      <div className="about-grid">
+        <article>
+          <Database />
+          <h2>{t("sources")}</h2>
+          <p>{t("sourcesBody")}</p>
+          <a
+            className="text-link"
+            href="https://github.com/Hankintailmoitukset/hilma-api/blob/master/endpoints/avpendpoints.md"
+            target="_blank"
+            rel="noreferrer"
+          >
+            Hilma API <ExternalLink size={14} />
+          </a>
+          <a
+            className="text-link"
+            href="https://www.ytj.fi/index/avoindata.html"
+            target="_blank"
+            rel="noreferrer"
+          >
+            PRH / YTJ <ExternalLink size={14} />
+          </a>
+          <a
+            className="text-link"
+            href="https://avoindata.suomi.fi/data/fi/dataset/ba96a638-67bf-4747-b084-c78ccfe052e9"
+            target="_blank"
+            rel="noreferrer"
+          >
+            {t("officialDataset")} <ExternalLink size={14} />
+          </a>
+        </article>
+        <article>
+          <Flag />
+          <h2>{t("signalDefinitions")}</h2>
+          {signals.map((s, i) => (
+            <p key={s}>
+              <b>{t(s)}: </b>
+              {t(["singleDefinition", "shortDefinition", "nearDefinition"][i])}
+            </p>
+          ))}
+          <strong>{t("disclaimer")}</strong>
+        </article>
+        <article>
+          <Layers3 />
+          <h2>{t("limits")}</h2>
+          <p>{t("limitsBody")}</p>
+          <p>{t("valuesBody")}</p>
+        </article>
+        <article>
+          <Wallet />
+          <h2>{t("spending")}</h2>
+          <p>{t("spendingCoverage")}</p>
+          <p>{t("unofficial")}</p>
+          <a
+            className="text-link"
+            href="https://github.com/Savvyboi/procumonitor"
+            target="_blank"
+            rel="noreferrer"
+          >
+            {t("github")}
+            <ArrowUpRight size={15} />
+          </a>
+        </article>
+      </div>
+    </section>
+  );
+}
 export default function App() {
+  const [language, setLanguage] = useState<Language>(initialLanguage);
+  return (
+    <LanguageContext.Provider value={{ language, setLanguage }}>
+      <Explorer />
+    </LanguageContext.Provider>
+  );
+}
+function Explorer() {
+  const { language, setLanguage, t, fmt, money, date } = useI18n();
   const params = new URLSearchParams(location.search);
-  const [view, setView] = useState(params.get("view") || "explore"),
-    [data, setData] = useState<Dataset | null>(null),
-    [companies, setCompanies] = useState<Record<string, Company>>({}),
-    [spending, setSpending] = useState<Spending | null>(null),
-    [error, setError] = useState("");
-  const [query, setQuery] = useState(params.get("q") || ""),
-    [region, setRegion] = useState(params.get("region") || ""),
-    [category, setCategory] = useState(params.get("category") || ""),
-    [status, setStatus] = useState(params.get("status") || ""),
-    [buyer, setBuyer] = useState(params.get("buyer") || "");
-  const [sort, setSort] = useState("newest"),
-    [page, setPage] = useState(1),
-    [advanced, setAdvanced] = useState(false),
-    [minValue, setMinValue] = useState(""),
-    [period, setPeriod] = useState(""),
-    [signal, setSignal] = useState(""),
-    [includeEarlier, setIncludeEarlier] = useState(false);
-  const [saved, setSaved] = useState<string[]>(() => {
-    try {
-      const s = JSON.parse(localStorage.getItem("avoin-saved") || "[]");
-      return Array.isArray(s) ? s.filter((x) => typeof x === "string") : [];
-    } catch {
-      return [];
-    }
-  });
-  const [selected, setSelected] = useState<Notice | null>(null),
-    [mobile, setMobile] = useState(false),
-    [exportOpen, setExportOpen] = useState(false),
-    [toast, setToast] = useState(""),
-    [showFeeds, setShowFeeds] = useState(false),
-    [buyerQuery, setBuyerQuery] = useState(""),
-    [spendingTab, setSpendingTab] = useState("buyers"),
-    [spendingQuery, setSpendingQuery] = useState(""),
-    [spendingPage, setSpendingPage] = useState(1);
+  const [view, setView] = useState(() =>
+    views.includes(params.get("view") || "") ? params.get("view")! : "explore",
+  );
+  const [filters, setFilters] = useState<Filters>(() => readFilters(params));
+  const [sort, setSort] = useState(() =>
+    sorts.includes(params.get("sort") as (typeof sorts)[number])
+      ? params.get("sort")!
+      : "newest",
+  );
+  const [pageSize, setPageSize] = useState(() =>
+    [15, 30, 60].includes(Number(params.get("size")))
+      ? Number(params.get("size"))
+      : 15,
+  );
+  const [page, setPage] = useState(1);
+  const [advanced, setAdvanced] = useState(() =>
+    Object.entries(readFilters(params)).some(
+      ([k, v]) =>
+        !["q", "region", "category", "status"].includes(k) &&
+        v !== defaults[k as keyof Filters],
+    ),
+  );
+  const [theme, setTheme] = useState(
+    () =>
+      stored("tilimyyra-theme") ||
+      (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"),
+  );
+  const [data, setData] = useState<Dataset | null>(null);
+  const [companies, setCompanies] = useState<Record<string, Company>>({});
+  const [spending, setSpending] = useState<Spending | null>(null);
+  const [error, setError] = useState(false);
+  const [saved, setSaved] = useState<string[]>(initialSaved);
+  const [selectedId, setSelectedId] = useState<string | null>(
+    params.get("notice"),
+  );
+  const [mobile, setMobile] = useState(false);
+  const [narrow, setNarrow] = useState(
+    () => matchMedia("(max-width: 760px)").matches,
+  );
+  const sidebarRef = useRef<HTMLElement>(null);
+  const [feedOpen, setFeedOpen] = useState(false);
+  const [storageError, setStorageError] = useState(false);
+  const [directoryQuery, setDirectoryQuery] = useState("");
+  const [spendingTab, setSpendingTab] = useState<
+    "buyers" | "suppliers" | "categories"
+  >("buyers");
+  const [spendingQuery, setSpendingQuery] = useState("");
+  const [spendingPage, setSpendingPage] = useState(1);
   const searchRef = useRef<HTMLInputElement>(null);
   useEffect(() => {
-    let active = true;
-    Promise.all([
-      loadNotices(),
-      fetch(BASE + "data/companies.json").then((r) => (r.ok ? r.json() : {})),
-      fetch(BASE + "data/spending.json").then((r) => (r.ok ? r.json() : null)),
-    ])
-      .then(([d, c, s]) => {
-        if (!active) return;
-        setData(d);
-        setCompanies(c);
-        setSpending(s);
-        const id = params.get("notice");
-        if (id) setSelected(d.notices.find((n: Notice) => n.id === id) || null);
-      })
-      .catch(
-        () =>
-          active &&
-          setError(
-            "The data snapshot could not be loaded. Refresh, or use the official Hilma service.",
-          ),
+    const media = matchMedia("(max-width: 760px)");
+    const update = () => {
+      setNarrow(media.matches);
+      if (!media.matches) setMobile(false);
+    };
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, []);
+  useEffect(() => {
+    if (!mobile || !narrow) return;
+    const previous = document.activeElement as HTMLElement | null;
+    sidebarRef.current?.querySelector<HTMLButtonElement>("button")?.focus();
+    const trap = (event: KeyboardEvent) => {
+      if (event.key !== "Tab") return;
+      const buttons = Array.from(
+        sidebarRef.current?.querySelectorAll<HTMLButtonElement>("button") || [],
       );
+      const first = buttons[0],
+        last = buttons[buttons.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last?.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first?.focus();
+      }
+    };
+    window.addEventListener("keydown", trap);
+    return () => {
+      window.removeEventListener("keydown", trap);
+      previous?.focus();
+    };
+  }, [mobile, narrow]);
+  useEffect(() => {
+    let active = true;
+    loadNotices()
+      .then((d) => {
+        if (active) setData(d);
+      })
+      .catch(() => {
+        if (active) setError(true);
+      });
+    fetch(BASE + "data/companies.json")
+      .then((r) => (r.ok ? r.json() : {}))
+      .then((c) => {
+        if (active) setCompanies(c);
+      })
+      .catch(() => {});
+    fetch(BASE + "data/spending.json")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((s) => {
+        if (active) setSpending(s);
+      })
+      .catch(() => {});
     return () => {
       active = false;
     };
   }, []);
   useEffect(() => {
+    document.documentElement.lang = language;
+    document.documentElement.dataset.theme = theme;
+    document.title = "Tilimyyrä — " + t("tagline");
+    document
+      .querySelector('meta[name="description"]')
+      ?.setAttribute("content", t("heroBody"));
+    document
+      .querySelector('meta[name="theme-color"]')
+      ?.setAttribute("content", theme === "dark" ? "#111e26" : "#194b3b");
     try {
-      localStorage.setItem("avoin-saved", JSON.stringify(saved));
+      localStorage.setItem("tilimyyra-language", language);
+      localStorage.setItem("tilimyyra-theme", theme);
+      localStorage.setItem("tilimyyra-saved", JSON.stringify(saved));
     } catch {
-      setToast("Browser storage unavailable. Saved items last for this visit.");
+      setStorageError(true);
     }
-  }, [saved]);
+  }, [language, theme, saved]);
   useEffect(() => {
     setPage(1);
-  }, [
-    query,
-    region,
-    category,
-    status,
-    buyer,
-    sort,
-    minValue,
-    period,
-    signal,
-    view,
-    includeEarlier,
-  ]);
+  }, [filters, sort, pageSize, view, directoryQuery]);
   useEffect(() => {
-    const p = new URLSearchParams();
+    const p = writeFilters(filters);
+    p.set("lang", language);
     if (view !== "explore") p.set("view", view);
-    for (const [k, v] of Object.entries({
-      q: query,
-      region,
-      category,
-      status,
-      buyer,
-      notice: selected?.id || "",
-    }))
-      if (v) p.set(k, v);
+    if (sort !== "newest") p.set("sort", sort);
+    if (pageSize !== 15) p.set("size", String(pageSize));
+    if (selectedId) p.set("notice", selectedId);
     history.replaceState(
       null,
       "",
-      location.pathname + (p.size ? "?" + p.toString() : ""),
+      location.pathname + "?" + p.toString() + location.hash,
     );
-  }, [view, query, region, category, status, buyer, selected]);
+  }, [filters, view, sort, pageSize, selectedId, language]);
   useEffect(() => {
-    if (!toast) return;
-    const id = setTimeout(() => setToast(""), 3500);
-    return () => clearTimeout(id);
-  }, [toast]);
-  useEffect(() => {
-    const fn = (e: KeyboardEvent) => {
+    const onPop = () => {
+      const p = new URLSearchParams(location.search);
+      setFilters(readFilters(p));
+      setView(views.includes(p.get("view") || "") ? p.get("view")! : "explore");
+      setSelectedId(p.get("notice"));
+      setSort(
+        sorts.includes(p.get("sort") as (typeof sorts)[number])
+          ? p.get("sort")!
+          : "newest",
+      );
+      setPageSize(
+        [15, 30, 60].includes(Number(p.get("size")))
+          ? Number(p.get("size"))
+          : 15,
+      );
+      const lang = p.get("lang");
+      if (lang === "fi" || lang === "sv" || lang === "en") setLanguage(lang);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement;
       if (
         e.key === "/" &&
-        !(e.target instanceof HTMLInputElement) &&
-        !(e.target instanceof HTMLSelectElement)
+        !["INPUT", "SELECT", "TEXTAREA"].includes(target.tagName) &&
+        !target.isContentEditable &&
+        !document.querySelector("dialog[open]")
       ) {
         e.preventDefault();
         searchRef.current?.focus();
       }
-      if (e.key === "Escape") {
-        setExportOpen(false);
-        setShowFeeds(false);
-        setMobile(false);
-      }
+      if (e.key === "Escape") setMobile(false);
     };
-    window.addEventListener("keydown", fn);
-    return () => window.removeEventListener("keydown", fn);
+    window.addEventListener("popstate", onPop);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("popstate", onPop);
+      window.removeEventListener("keydown", onKey);
+    };
   }, []);
   const notices = useMemo(
     () =>
@@ -580,114 +689,77 @@ export default function App() {
       ),
     [data],
   );
-  const latest = useMemo(
-    () => notices.filter((n) => includeEarlier || !n.superseded),
-    [notices, includeEarlier],
-  );
-  const regions = useMemo(
-      () => [...new Set(latest.flatMap((n) => n.regions))].sort(),
-      [latest],
-    ),
-    categories = useMemo(
-      () => [...new Set(latest.map((n) => n.category))].sort(),
-      [latest],
-    );
-  const searchTexts = useMemo(
+  const latest = useMemo(() => notices.filter((n) => !n.superseded), [notices]);
+  const options = useMemo(() => {
+    const unique = (values: string[]) =>
+      [...new Set(values)].sort((a, b) => a.localeCompare(b, language));
+    return {
+      regions: unique(notices.flatMap((n) => n.regions)),
+      categories: unique(notices.map((n) => n.category)),
+      buyers: unique(notices.map((n) => n.buyer)),
+      buyerTypes: unique(notices.map((n) => n.buyerType)),
+      procedures: unique(notices.map((n) => n.procedure)),
+    };
+  }, [notices, language]);
+  const searchIndex = useMemo(
     () =>
       new Map(
-        latest.map((n) => [
+        notices.map((n) => [
           n.id,
-          (
-            n.title +
-            " " +
-            n.buyer +
-            " " +
-            n.description +
-            " " +
-            n.businessId +
-            " " +
-            n.cpvCodes.join(" ")
-          ).toLowerCase(),
+          searchText(n, filters.scope) +
+            (filters.scope === "all"
+              ? " " +
+                fold(
+                  t(n.category) +
+                    " " +
+                    t(n.status) +
+                    " " +
+                    n.regions.map((r) => t(r)).join(" "),
+                )
+              : ""),
         ]),
       ),
-    [latest],
+    [notices, filters.scope, language],
   );
-  const filtered = useMemo(() => {
-    const words = query.toLowerCase().split(/\s+/).filter(Boolean);
-    return latest
-      .filter(
-        (n) =>
-          words.every((w) => searchTexts.get(n.id)?.includes(w)) &&
-          (!region || n.regions.includes(region)) &&
-          (!category || n.category === category) &&
-          (!status || n.status === status) &&
-          (!buyer || n.buyer === buyer) &&
-          (!minValue ||
-            (n.estimatedValue !== null &&
-              n.estimatedCurrency === "EUR" &&
-              n.estimatedValue >= Number(minValue))) &&
-          (!period ||
-            Date.now() - Date.parse(n.published) <= Number(period) * day) &&
-          (!signal || n.flags.includes(signal)) &&
-          (view !== "saved" || saved.includes(n.id)) &&
-          (view !== "signals" || n.flags.length > 0),
-      )
-      .sort((a, b) =>
-        sort === "value"
-          ? (b.estimatedValue ?? -1) - (a.estimatedValue ?? -1)
-          : sort === "deadline"
-            ? Date.parse(a.deadline || "9999-01-01") -
-              Date.parse(b.deadline || "9999-01-01")
-            : b.published.localeCompare(a.published),
-      );
-  }, [
-    latest,
-    searchTexts,
-    query,
-    region,
-    category,
-    status,
-    buyer,
-    minValue,
-    period,
-    signal,
-    view,
-    saved,
-    sort,
-  ]);
-  const active = latest.filter((n) => n.status === "Active").length,
-    awarded = latest.filter((n) => n.status === "Awarded").length,
-    planning = latest.filter((n) => n.status === "Planning").length,
-    flagged = latest.filter((n) => n.flags.length > 0).length;
-  const estimated = latest.filter(
-      (n) => n.estimatedValue !== null && n.estimatedCurrency === "EUR",
-    ),
-    totalEstimate = estimated.reduce((s, n) => s + (n.estimatedValue || 0), 0);
-  const byRegion = useMemo(
+  const filtered = useMemo(
     () =>
-      regions
-        .map((r) => ({
-          name: r,
-          count: latest.filter((n) => n.regions.includes(r)).length,
-        }))
-        .sort((a, b) => b.count - a.count)
-        .slice(0, 3),
-    [regions, latest],
+      sortNotices(
+        notices.filter(
+          (n) =>
+            matchesFilters(n, filters) &&
+            matchesQuery(
+              searchIndex.get(n.id) || "",
+              filters.q,
+              filters.match,
+            ) &&
+            (view !== "saved" || saved.includes(n.id)) &&
+            (view !== "signals" || n.flags.length > 0),
+        ),
+        sort,
+        language,
+      ),
+    [notices, filters, searchIndex, sort, language, view, saved],
   );
-  const byCategory = useMemo(
-    () =>
-      categories
-        .map((c) => ({
-          name: c,
-          count: filtered.filter((n) => n.category === c).length,
-        }))
-        .filter((x) => x.count > 0)
-        .sort((a, b) => b.count - a.count)
-        .slice(0, 5),
-    [categories, filtered],
-  );
+  const selected = notices.find((n) => n.id === selectedId);
+  const categoryStats = useMemo(() => {
+    const groups = new Map<
+      string,
+      { name: string; count: number; active: number }
+    >();
+    for (const n of latest) {
+      const group = groups.get(n.category) || {
+        name: n.category,
+        count: 0,
+        active: 0,
+      };
+      group.count++;
+      if (n.status === "Active") group.active++;
+      groups.set(n.category, group);
+    }
+    return [...groups.values()].sort((a, b) => b.count - a.count);
+  }, [latest]);
   const buyers = useMemo(() => {
-    const m = new Map<
+    const groups = new Map<
       string,
       {
         name: string;
@@ -695,931 +767,977 @@ export default function App() {
         active: number;
         value: number;
         known: number;
-        regions: Set<string>;
         id: string | null;
+        regions: Set<string>;
       }
     >();
     for (const n of latest) {
-      const b = m.get(n.buyer) || {
+      const group = groups.get(n.buyer) || {
         name: n.buyer,
         count: 0,
         active: 0,
         value: 0,
         known: 0,
-        regions: new Set<string>(),
         id: n.businessId,
+        regions: new Set<string>(),
       };
-      b.count++;
-      b.active += n.status === "Active" ? 1 : 0;
+      group.count++;
+      if (n.status === "Active") group.active++;
       if (n.estimatedValue !== null && n.estimatedCurrency === "EUR") {
-        b.value += n.estimatedValue;
-        b.known++;
+        group.value += n.estimatedValue;
+        group.known++;
       }
-      n.regions.forEach((r) => b.regions.add(r));
-      m.set(n.buyer, b);
+      n.regions.forEach((r) => group.regions.add(r));
+      groups.set(n.buyer, group);
     }
-    return [...m.values()]
+    return [...groups.values()]
       .filter((b) =>
-        (b.name + " " + b.id).toLowerCase().includes(buyerQuery.toLowerCase()),
+        fold(b.name + " " + (b.id || "")).includes(fold(directoryQuery)),
       )
       .sort((a, b) => b.count - a.count);
-  }, [latest, buyerQuery]);
-  const toggleSave = (id: string) =>
-    setSaved((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
-  function clear() {
-    setQuery("");
-    setRegion("");
-    setCategory("");
-    setStatus("");
-    setBuyer("");
-    setMinValue("");
-    setPeriod("");
-    setSignal("");
-    setIncludeEarlier(false);
-  }
-  function navigate(v: string) {
-    setView(v);
-    setMobile(false);
+  }, [latest, directoryQuery]);
+  const estimates = latest.filter(
+    (n) => n.estimatedValue !== null && n.estimatedCurrency === "EUR",
+  );
+  const totalEstimate = estimates.reduce(
+    (sum, n) => sum + (n.estimatedValue ?? 0),
+    0,
+  );
+  const activeCount = latest.filter((n) => n.status === "Active").length;
+  const flaggedCount = latest.filter((n) => n.flags.length > 0).length;
+  const chips = (Object.keys(defaults) as (keyof Filters)[]).filter(
+    (k) => filters[k] !== defaults[k],
+  );
+  const setFilter = <K extends keyof Filters>(key: K, value: Filters[K]) =>
+    setFilters((f) => ({ ...f, [key]: value }));
+  const clear = () => setFilters({ ...defaults });
+  function navigate(next: string) {
+    setView(next);
     clear();
-    window.scrollTo({ top: 0, behavior: "smooth" });
+    setDirectoryQuery("");
+    setPage(1);
+    setMobile(false);
+    window.scrollTo({ top: 0 });
   }
-  const filtersOn = !!(
-    query ||
-    region ||
-    category ||
-    status ||
-    buyer ||
-    minValue ||
-    period ||
-    signal ||
-    includeEarlier
-  );
-  const weekCounts = useMemo(
-    () =>
-      Array.from(
-        { length: 8 },
-        (_, i) =>
-          latest.filter((n) => {
-            const age = (Date.now() - Date.parse(n.published)) / day;
-            return age >= (7 - i) * 7 && age < (8 - i) * 7;
-          }).length,
-      ),
-    [latest],
-  );
-  const lastWeek = weekCounts[7],
-    prevWeek = weekCounts[6],
-    trend = prevWeek
-      ? Math.round(((lastWeek - prevWeek) / prevWeek) * 100)
-      : null;
-  const rows = filtered.slice((page - 1) * 15, page * 15),
-    pageCount = Math.ceil(filtered.length / 15);
+  function chooseCategory(name: string) {
+    navigate("explore");
+    setFilters({ ...defaults, category: name });
+  }
+  const toggleSave = (id: string) =>
+    setSaved((items) =>
+      items.includes(id) ? items.filter((i) => i !== id) : [...items, id],
+    );
   const nav = [
-    { id: "explore", label: "Explore procurement", icon: Search },
-    { id: "buyers", label: "Public buyers", icon: Building2 },
-    { id: "spending", label: "Spending", icon: Wallet },
-    { id: "signals", label: "Transparency signals", icon: Flag },
+    { id: "explore", icon: Search },
+    { id: "categories", icon: Layers3 },
+    { id: "buyers", icon: Building2 },
+    { id: "spending", icon: Wallet },
+    { id: "signals", icon: Flag },
   ];
-  const spendingRows = (
-    spending?.[spendingTab as "buyers" | "suppliers" | "categories"] || []
-  ).filter((r) => r.name.toLowerCase().includes(spendingQuery.toLowerCase()));
+  const rangeInvalid = !!(
+    (filters.min && filters.max && Number(filters.min) > Number(filters.max)) ||
+    (filters.publishedFrom &&
+      filters.publishedTo &&
+      filters.publishedFrom > filters.publishedTo) ||
+    (filters.deadlineFrom &&
+      filters.deadlineTo &&
+      filters.deadlineFrom > filters.deadlineTo)
+  );
+  const visiblePage = Math.min(
+    page,
+    Math.max(1, Math.ceil(filtered.length / pageSize)),
+  );
+  const rows = filtered.slice(
+    (visiblePage - 1) * pageSize,
+    visiblePage * pageSize,
+  );
+  const spendingRows = (spending?.[spendingTab] || []).filter((row) =>
+    fold(row.name).includes(fold(spendingQuery)),
+  );
+  const selectFilter = (
+    key: keyof Filters,
+    label: string,
+    values: string[],
+    empty = "all",
+  ) => (
+    <label className="field">
+      {t(label)}
+      <select
+        value={String(filters[key])}
+        onChange={(e) => setFilter(key, e.target.value)}
+      >
+        <option value="">{t(empty)}</option>
+        {values.map((value) => (
+          <option key={value} value={value}>
+            {t(value)}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
   return (
     <div className="app">
       <a href="#main" className="skip-link">
-        Skip to content
+        {t("skip")}
       </a>
       {mobile && (
         <button
           className="mobile-backdrop"
-          aria-label="Close navigation"
           onClick={() => setMobile(false)}
+          aria-label={t("close")}
         />
       )}
-      <aside className={"sidebar " + (mobile ? "open" : "")}>
+      <aside
+        ref={sidebarRef}
+        className={"sidebar " + (mobile ? "open" : "")}
+        inert={narrow && !mobile}
+      >
         <button
           className="brand"
           onClick={() => navigate("explore")}
-          aria-label="Avoin home"
+          aria-label={t("home")}
         >
-          <Logo />
+          <Mole small />
           <span>
-            avoin<span className="brand-dot">.</span>
-            <small>FINLAND, IN THE OPEN</small>
+            tilimyyrä<small>{t("tagline")}</small>
           </span>
         </button>
-        <div className="sidebar-label">THE PUBLIC PICTURE</div>
-        <nav aria-label="Main navigation">
+        <div className="sidebar-label">{t("observatory")}</div>
+        <nav aria-label={t("navigation")}>
           {nav.map((item) => (
             <button
               key={item.id}
               className={"nav-item " + (view === item.id ? "selected" : "")}
               onClick={() => navigate(item.id)}
+              aria-current={view === item.id ? "page" : undefined}
             >
-              <item.icon size={18} />
-              <span>{item.label}</span>
-              {item.id === "signals" && flagged > 0 && (
-                <small className="nav-count">{fmt(flagged)}</small>
-              )}
+              <item.icon size={19} />
+              <span>{t(item.id)}</span>
+              {item.id === "signals" && <small>{fmt(flaggedCount)}</small>}
             </button>
           ))}
         </nav>
         <div className="sidebar-divider" />
         <button
           className={"nav-item " + (view === "saved" ? "selected" : "")}
+          aria-current={view === "saved" ? "page" : undefined}
           onClick={() => navigate("saved")}
         >
-          <Bookmark size={18} />
-          <span>Saved notices</span>
-          <small className="nav-count">{saved.length}</small>
+          <Bookmark size={19} />
+          <span>{t("saved")}</span>
+          <small>{fmt(saved.length)}</small>
         </button>
         <button
           className="nav-item"
           onClick={() => {
-            setShowFeeds(true);
+            setFeedOpen(true);
             setMobile(false);
           }}
         >
-          <Rss size={18} />
-          <span>Follow the data</span>
+          <Rss size={19} />
+          <span>{t("feeds")}</span>
           <ArrowUpRight size={14} />
         </button>
         <div className="sidebar-bottom">
           <div className="civic-note">
-            <Globe2 size={22} />
-            <h3>
-              Public data.
-              <br />
-              Public understanding.
-            </h3>
-            <p>
-              Independent civic tech.
-              <br />
-              Open by design.
-            </p>
-            <button onClick={() => navigate("about")}>
-              Why we built Avoin <ArrowUpRight size={14} />
-            </button>
+            <span className="small-seed">✳</span>
+            <h3>{t("civic")}</h3>
+            <p>{t("civicBody")}</p>
           </div>
           <button
-            className={
-              "nav-item about-link " + (view === "about" ? "selected" : "")
-            }
+            className={"nav-item " + (view === "about" ? "selected" : "")}
+            aria-current={view === "about" ? "page" : undefined}
             onClick={() => navigate("about")}
           >
-            <CircleHelp size={17} />
-            About & methodology
+            <CircleHelp size={18} />
+            <span>{t("about")}</span>
           </button>
-          <div className="sidebar-footer">
-            <span className="live-dot" />
-            Powered by official open data
-          </div>
+          <div className="sidebar-footer">{t("independent")}</div>
         </div>
       </aside>
-      <div className="workspace">
+      <div className="workspace" inert={narrow && mobile}>
         <header className="topbar">
-          <div>
+          <div className="topbar-title">
             <button
               className="icon-button mobile-menu"
+              aria-label={t("openMenu")}
+              aria-expanded={mobile}
               onClick={() => setMobile(!mobile)}
-              aria-label="Open navigation"
             >
               <Menu size={22} />
             </button>
-            <span className="breadcrumb">
-              The procurement observatory <span>/</span>{" "}
-              <b>
-                {(
-                  {
-                    explore: "Overview",
-                    buyers: "Public buyers",
-                    spending: "Spending",
-                    signals: "Transparency signals",
-                    saved: "Saved notices",
-                    about: "About Avoin",
-                  } as Record<string, string>
-                )[view] || "Overview"}
-              </b>
+            <span>
+              Tilimyyrä <i>/</i> <b>{t(view)}</b>
             </span>
           </div>
-          <div className="topbar-right">
-            <span className="country">
-              <span className="finnish-flag" />
-              Finland
-            </span>
-            <span className="topbar-rule" />
-            <span className="language">
-              <Globe2 size={15} />
-              EN <small>· original notices</small>
-            </span>
+          <div className="preferences">
+            <Globe2 size={16} />
+            <select
+              aria-label={t("language")}
+              value={language}
+              onChange={(e) => setLanguage(e.target.value as Language)}
+            >
+              <option value="fi">Suomi</option>
+              <option value="sv">Svenska</option>
+              <option value="en">English</option>
+            </select>
+            <button
+              className="icon-button theme-toggle"
+              aria-label={t(theme === "dark" ? "light" : "dark")}
+              title={t(theme === "dark" ? "light" : "dark")}
+              onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
+            >
+              {theme === "dark" ? <Sun size={19} /> : <Moon size={19} />}
+            </button>
           </div>
         </header>
         <main id="main">
+          {storageError && (
+            <p className="storage-note" role="status">
+              {t("storage")}
+            </p>
+          )}
           {error ? (
-            <div className="error-state">
-              <Database size={32} />
-              <h1>We couldn’t load the data.</h1>
-              <p>{error}</p>
+            <div className="empty-state" role="alert">
+              <Database size={36} />
+              <h1>{t("loadError")}</h1>
               <button
                 className="button primary"
                 onClick={() => location.reload()}
               >
-                Try again
+                {t("retry")}
               </button>
-              <a href="https://www.hankintailmoitukset.fi">
-                Visit Hilma
-                <ArrowUpRight size={16} />
+              <a
+                className="text-link"
+                href="https://www.hankintailmoitukset.fi"
+              >
+                {t("readHilma")}
+                <ExternalLink size={16} />
               </a>
             </div>
           ) : !data ? (
-            <div className="loading">
-              <Logo />
-              <p>Opening the public picture…</p>
+            <div className="loading" role="status">
+              <Mole />
+              <p>{t("loading")}</p>
             </div>
           ) : view === "about" ? (
             <About />
           ) : (
             <>
-              {["explore", "signals", "saved"].includes(view) && (
+              {["explore", "saved", "signals"].includes(view) && (
                 <>
                   <section className="hero">
                     <div className="hero-copy">
-                      <div className="eyebrow">
+                      <span className="eyebrow">
                         <span className="live-dot" />
-                        THE FINNISH PROCUREMENT OBSERVATORY
-                      </div>
+                        {t("observatory")}
+                      </span>
                       <h1>
-                        {view === "saved" ? (
+                        {view === "explore" ? (
                           <>
-                            Your watchlist.
+                            {t("hero1")}
                             <br />
-                            <span>Keep the picture in view.</span>
-                          </>
-                        ) : view === "signals" ? (
-                          <>
-                            A closer look.
-                            <br />
-                            <span>Better questions start here.</span>
+                            <em>{t("hero2")}</em>
                           </>
                         ) : (
-                          <>
-                            Public money.
-                            <br />
-                            <span>In plain sight.</span>
-                          </>
+                          t(
+                            view === "saved"
+                              ? "savedHeading"
+                              : "signalsHeading",
+                          )
                         )}
                       </h1>
                       <p>
-                        {view === "saved"
-                          ? "The notices you’re following, all in one place. Saved on this device."
-                          : view === "signals"
-                            ? "Explore data signals that deserve context, curiosity and a closer read."
-                            : "Explore who’s buying, what’s being bought, and where public money goes. Official Finnish procurement data, made useful."}
+                        {t(
+                          view === "explore"
+                            ? "heroBody"
+                            : view === "saved"
+                              ? "savedBody"
+                              : "signalsBody",
+                        )}
                       </p>
                       <div className="freshness">
-                        <span className="fresh-dot" />
-                        {data.fetchedAt
-                          ? "Updated " +
-                            date(data.fetchedAt) +
-                            " · " +
-                            new Intl.DateTimeFormat("en-GB", {
-                              hour: "2-digit",
-                              minute: "2-digit",
-                              timeZone: "Europe/Helsinki",
-                            }).format(new Date(data.fetchedAt)) +
-                            " Helsinki"
-                          : "Waiting for first import"}
-                        <span className="freshness-divider">/</span>
-                        <span>6-hour refresh schedule</span>
+                        {t("updated")} {date(data.fetchedAt, true)}{" "}
+                        <span>· {t("schedule")}</span>
                       </div>
                     </div>
-                    <div className="region-card">
-                      <div className="region-card-heading">
-                        <span>ONE COUNTRY. AN OPEN VIEW.</span>
-                        <ArrowUpRight size={17} />
-                      </div>
-                      <Finland />
-                      <div className="region-card-content">
-                        <div className="region-card-title">
-                          From local needs
-                          <br />
-                          to national impact.
-                        </div>
-                        <p>Explore procurement by region</p>
-                        {byRegion.map((r) => (
-                          <button
-                            key={r.name}
-                            onClick={() => {
-                              setRegion(r.name);
-                              document
-                                .getElementById("results")
-                                ?.scrollIntoView({ behavior: "smooth" });
-                            }}
-                          >
-                            <span>
-                              <i />
-                              {r.name}
-                            </span>
-                            <b>
-                              {fmt(r.count)}
-                              <ChevronRight size={13} />
-                            </b>
-                          </button>
-                        ))}
-                      </div>
+                    <div className="mascot-card">
+                      <div className="mascot-orbit" />
+                      <Mole />
+                      <span>{t("mascotNote")}</span>
+                      <span className="mascot-signature">
+                        TILIMYYRÄ / {new Date(data.fetchedAt).getFullYear()}
+                      </span>
                     </div>
                   </section>
-                  {!notices.length && (
-                    <div className="notice-flags">
-                      <Database />
-                      <div>
-                        <strong>No imported notices yet</strong>
-                        <p>
-                          Run the Hilma import or scheduled workflow to populate
-                          the explorer.
-                        </p>
-                      </div>
-                    </div>
-                  )}
-                  <section className="metrics" aria-label="Snapshot statistics">
+                  <section className="metrics" aria-label={t("snapshot")}>
                     <div className="metric">
                       <span>
-                        Notices in view
+                        {t("snapshot")}
                         <Layers3 size={17} />
                       </span>
                       <strong>{fmt(latest.length)}</strong>
-                      <small>
-                        Rolling {data.windowDays}-day publication window
-                      </small>
+                      <small>{t("window", { days: data.windowDays })}</small>
                     </div>
                     <div className="metric">
                       <span>
-                        Open for bids
-                        <TrendingUp size={17} />
+                        {t("activeCount")}
+                        <ArrowUpRight size={18} />
                       </span>
                       <strong>
-                        {fmt(active)}
-                        <i className="tiny-trend">Open now</i>
+                        {fmt(activeCount)}
+                        <i className="live-dot" />
                       </strong>
-                      <small>Active notices with no passed deadline</small>
+                      <small>{t("activeHint")}</small>
                     </div>
                     <div className="metric">
                       <span>
-                        Reported estimates
+                        {t("estimates")}
                         <Wallet size={17} />
                       </span>
-                      <strong>{money(totalEstimate)}</strong>
+                      <strong>
+                        {estimates.length ? money(totalEstimate) : t("unknown")}
+                      </strong>
                       <small>
-                        EUR values from {fmt(estimated.length)} notices · not
-                        actual spend
+                        {t("estimateCoverage", {
+                          count: fmt(estimates.length),
+                        })}
                       </small>
                     </div>
-                    <div className="metric">
+                    <button
+                      className="metric metric-button"
+                      onClick={() => navigate("signals")}
+                    >
                       <span>
-                        Transparency signals
+                        {t("signals")}
                         <Flag size={17} />
                       </span>
-                      <strong>{fmt(flagged)}</strong>
-                      <button onClick={() => navigate("signals")}>
-                        Notices worth a closer look <ArrowRight size={13} />
-                      </button>
-                    </div>
+                      <strong>{fmt(flaggedCount)}</strong>
+                      <small>
+                        {t("signalHint")} <ArrowRight size={13} />
+                      </small>
+                    </button>
                   </section>
-                  <div className="content-layout">
-                    <section className="results-panel" id="results">
-                      <div className="section-heading">
-                        <div>
-                          <span className="eyebrow">THE NOTICEBOARD</span>
-                          <h2>
-                            {view === "saved"
-                              ? "Saved procurement"
-                              : view === "signals"
-                                ? "Notices with signals"
-                                : "Explore procurement"}
-                          </h2>
-                        </div>
-                        <div className="export-wrap">
-                          <button
-                            className="button secondary small"
-                            onClick={() => setExportOpen(!exportOpen)}
-                            aria-expanded={exportOpen}
-                          >
-                            <ArrowDownToLine size={15} />
-                            Export
-                            <ChevronDown size={13} />
-                          </button>
-                          {exportOpen && (
-                            <div className="dropdown export-menu">
-                              <small>
-                                {fmt(filtered.length)} matching notices
-                              </small>
-                              {(["csv", "json"] as const).map((k) => (
-                                <button
-                                  key={k}
-                                  onClick={() => {
-                                    exportData(filtered, k);
-                                    setExportOpen(false);
-                                    setToast(k.toUpperCase() + " downloaded");
-                                  }}
-                                >
-                                  Download {k.toUpperCase()}
-                                  <ArrowDownToLine size={14} />
-                                </button>
-                              ))}
-                            </div>
-                          )}
-                        </div>
+                  {view === "explore" && (
+                    <section className="category-strip">
+                      <div>
+                        <span className="eyebrow">{t("categories")}</span>
+                        <button
+                          className="text-link"
+                          onClick={() => navigate("categories")}
+                        >
+                          {t("allCategories")}
+                          <ArrowRight size={15} />
+                        </button>
                       </div>
-                      <div
-                        className="status-tabs"
-                        role="group"
-                        aria-label="Notice status"
-                      >
-                        {[
-                          ["", "All notices", latest.length],
-                          ["Active", "Active", active],
-                          ["Awarded", "Awarded", awarded],
-                          ["Planning", "Planning", planning],
-                        ].map(([s, label, count]) => (
+                      <div className="category-shortcuts">
+                        {categoryStats.slice(0, 6).map((c) => (
                           <button
-                            key={s}
-                            className={status === s ? "active-tab" : ""}
-                            onClick={() => setStatus(String(s))}
+                            key={c.name}
+                            className={
+                              filters.category === c.name ? "chosen" : ""
+                            }
+                            onClick={() =>
+                              setFilter(
+                                "category",
+                                filters.category === c.name ? "" : c.name,
+                              )
+                            }
                           >
-                            {label}
-                            <span>{fmt(Number(count))}</span>
+                            {t(c.name)}
+                            <span>{fmt(c.count)}</span>
                           </button>
                         ))}
                       </div>
-                      <div className="search-controls">
-                        <label className="search-field">
-                          <Search size={18} />
-                          <input
-                            ref={searchRef}
-                            type="search"
-                            value={query}
-                            onChange={(e) => setQuery(e.target.value)}
-                            placeholder="Search notices, buyers or CPV codes…"
-                            aria-label="Search procurement notices"
-                          />
-                          <kbd>/</kbd>
-                        </label>
-                        <div className="filter-row">
-                          <label className="select-control">
-                            <select
-                              aria-label="Filter by region"
-                              value={region}
-                              onChange={(e) => setRegion(e.target.value)}
-                            >
-                              <option value="">All regions</option>
-                              {regions.map((r) => (
-                                <option key={r}>{r}</option>
-                              ))}
-                            </select>
-                            <ChevronDown size={13} />
-                          </label>
-                          <label className="select-control">
-                            <select
-                              aria-label="Filter by category"
-                              value={category}
-                              onChange={(e) => setCategory(e.target.value)}
-                            >
-                              <option value="">All categories</option>
-                              {categories.map((c) => (
-                                <option key={c}>{c}</option>
-                              ))}
-                            </select>
-                            <ChevronDown size={13} />
-                          </label>
+                    </section>
+                  )}
+                  <section className="results-panel" id="results">
+                    <div className="section-heading">
+                      <div>
+                        <span className="eyebrow">{t("noticeboard")}</span>
+                        <h2>
+                          {t(
+                            view === "saved"
+                              ? "saved"
+                              : view === "signals"
+                                ? "signals"
+                                : "explore",
+                          )}
+                        </h2>
+                      </div>
+                      <div className="export-actions">
+                        {(["csv", "json"] as const).map((kind) => (
                           <button
-                            className={
-                              "filter-button " + (advanced ? "on" : "")
-                            }
-                            onClick={() => setAdvanced(!advanced)}
-                            aria-expanded={advanced}
+                            key={kind}
+                            className="button secondary small"
+                            disabled={!filtered.length}
+                            onClick={() => exportData(filtered, kind)}
+                            aria-label={t("export") + " " + kind.toUpperCase()}
                           >
-                            <SlidersHorizontal size={14} />
-                            More filters
+                            <ArrowDownToLine size={15} />
+                            {kind.toUpperCase()}
                           </button>
-                        </div>
-                        {advanced && (
-                          <div className="advanced-filters">
-                            <label>
-                              Published within
-                              <select
-                                value={period}
-                                onChange={(e) => setPeriod(e.target.value)}
-                              >
-                                <option value="">Entire snapshot</option>
-                                <option value="7">Last 7 days</option>
-                                <option value="30">Last 30 days</option>
-                                <option value="90">Last 90 days</option>
-                              </select>
-                            </label>
-                            <label>
-                              Minimum estimate (EUR)
+                        ))}
+                      </div>
+                    </div>
+                    <div
+                      className="status-tabs"
+                      role="group"
+                      aria-label={t("status")}
+                    >
+                      {["", ...statuses].map((status) => (
+                        <button
+                          key={status}
+                          className={
+                            filters.status === status ? "active-tab" : ""
+                          }
+                          onClick={() => setFilter("status", status)}
+                          aria-pressed={filters.status === status}
+                        >
+                          {t(status || "all")}
+                          <span>
+                            {fmt(
+                              status
+                                ? latest.filter((n) => n.status === status)
+                                    .length
+                                : latest.length,
+                            )}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                    <div className="search-controls">
+                      <label className="search-field">
+                        <Search size={20} />
+                        <input
+                          ref={searchRef}
+                          type="search"
+                          value={filters.q}
+                          onChange={(e) => setFilter("q", e.target.value)}
+                          aria-label={t("search")}
+                          placeholder={t("searchPlaceholder")}
+                        />
+                        <kbd>/</kbd>
+                      </label>
+                      <div className="filter-row">
+                        {selectFilter(
+                          "region",
+                          "region",
+                          options.regions,
+                          "allRegions",
+                        )}
+                        {selectFilter(
+                          "category",
+                          "category",
+                          options.categories,
+                          "allCategories",
+                        )}
+                        <button
+                          className={
+                            "button secondary filter-button " +
+                            (advanced ? "on" : "")
+                          }
+                          onClick={() => setAdvanced(!advanced)}
+                          aria-expanded={advanced}
+                          aria-controls="advanced-filters"
+                        >
+                          <SlidersHorizontal size={17} />
+                          {t("moreFilters")}
+                          {chips.length > 0 && (
+                            <span className="filter-count">{chips.length}</span>
+                          )}
+                        </button>
+                      </div>
+                      {advanced && (
+                        <div className="advanced-filters" id="advanced-filters">
+                          <label className="field">
+                            {t("searchMode")}
+                            <select
+                              value={filters.match}
+                              onChange={(e) =>
+                                setFilter("match", e.target.value)
+                              }
+                            >
+                              {[
+                                ["all", "allWords"],
+                                ["any", "anyWords"],
+                                ["phrase", "phrase"],
+                              ].map(([v, label]) => (
+                                <option key={v} value={v}>
+                                  {t(label)}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <label className="field">
+                            {t("searchScope")}
+                            <select
+                              value={filters.scope}
+                              onChange={(e) =>
+                                setFilter("scope", e.target.value)
+                              }
+                            >
+                              {[
+                                ["all", "allFields"],
+                                ["title", "title"],
+                                ["buyer", "buyer"],
+                                ["supplier", "supplier"],
+                                ["description", "description"],
+                              ].map(([v, label]) => (
+                                <option key={v} value={v}>
+                                  {t(label)}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <label className="field">
+                            {t("buyer")}
+                            <input
+                              list="buyer-options"
+                              value={filters.buyer}
+                              onChange={(e) =>
+                                setFilter("buyer", e.target.value)
+                              }
+                              placeholder={t("all")}
+                            />
+                            <datalist id="buyer-options">
+                              {options.buyers.map((name) => (
+                                <option key={name} value={name} />
+                              ))}
+                            </datalist>
+                          </label>
+                          {selectFilter(
+                            "buyerType",
+                            "buyerType",
+                            options.buyerTypes,
+                          )}
+                          {selectFilter(
+                            "procedure",
+                            "procedure",
+                            options.procedures,
+                          )}
+                          <label className="field">
+                            {t("cpv")}
+                            <input
+                              inputMode="numeric"
+                              value={filters.cpv}
+                              onChange={(e) => setFilter("cpv", e.target.value)}
+                              placeholder={t("cpvHint")}
+                            />
+                          </label>
+                          <label className="field">
+                            {t("valueKind")}
+                            <select
+                              value={filters.valueKind}
+                              onChange={(e) =>
+                                setFilter("valueKind", e.target.value)
+                              }
+                            >
+                              <option value="estimate">{t("estimate")}</option>
+                              <option value="award">{t("award")}</option>
+                            </select>
+                          </label>
+                          {(["min", "max"] as const).map((key) => (
+                            <label className="field" key={key}>
+                              {t(key)}
                               <input
                                 type="number"
                                 min="0"
-                                value={minValue}
-                                placeholder="No minimum"
-                                onChange={(e) => setMinValue(e.target.value)}
+                                value={filters[key]}
+                                placeholder={t("noLimit")}
+                                onChange={(e) => setFilter(key, e.target.value)}
                               />
                             </label>
-                            <label>
-                              Transparency signal
-                              <select
-                                value={signal}
-                                onChange={(e) => setSignal(e.target.value)}
-                              >
-                                <option value="">All signals</option>
-                                {Object.entries(flags).map(([k, v]) => (
-                                  <option key={k} value={k}>
-                                    {v}
-                                  </option>
-                                ))}
-                              </select>
-                            </label>
-                            <label className="check-filter">
-                              <input
-                                type="checkbox"
-                                checked={includeEarlier}
-                                onChange={(e) =>
-                                  setIncludeEarlier(e.target.checked)
-                                }
-                              />
-                              Include earlier versions
-                            </label>
-                            <label>
-                              Status
-                              <select
-                                value={status}
-                                onChange={(e) => setStatus(e.target.value)}
-                              >
-                                <option value="">All statuses</option>
-                                {[
-                                  "Active",
-                                  "Awarded",
-                                  "Planning",
-                                  "Closed",
-                                  "Cancelled",
-                                  "Other",
-                                ].map((s) => (
-                                  <option key={s}>{s}</option>
-                                ))}
-                              </select>
-                            </label>
-                          </div>
-                        )}
-                        {filtersOn && (
-                          <div className="filter-chips">
-                            {[
-                              query,
-                              region,
-                              category,
-                              buyer,
-                              signal && flags[signal],
-                              period && "Last " + period + " days",
-                              minValue && "Min. €" + minValue,
-                              status,
-                            ]
-                              .filter(Boolean)
-                              .map((v, i) => (
-                                <span key={i}>{v}</span>
+                          ))}
+                          <label className="field">
+                            {t("valueKnown")}
+                            <select
+                              value={filters.valueKnown}
+                              onChange={(e) =>
+                                setFilter("valueKnown", e.target.value)
+                              }
+                            >
+                              <option value="any">{t("all")}</option>
+                              <option value="reported">{t("reported")}</option>
+                              <option value="missing">{t("missing")}</option>
+                            </select>
+                          </label>
+                          <label className="field">
+                            {t("period")}
+                            <select
+                              value={filters.period}
+                              onChange={(e) =>
+                                setFilter("period", e.target.value)
+                              }
+                            >
+                              <option value="">{t("entire")}</option>
+                              {[7, 30, 90, 180].map((days) => (
+                                <option key={days} value={days}>
+                                  {t("days", { count: days })}
+                                </option>
                               ))}
-                            <button onClick={clear}>
-                              Clear all
+                            </select>
+                          </label>
+                          {selectFilter("signal", "signal", signals)}
+                          {(
+                            [
+                              "publishedFrom",
+                              "publishedTo",
+                              "deadlineFrom",
+                              "deadlineTo",
+                            ] as const
+                          ).map((key) => (
+                            <label className="field" key={key}>
+                              {t(key)}
+                              <input
+                                type="date"
+                                value={filters[key]}
+                                onChange={(e) => setFilter(key, e.target.value)}
+                              />
+                            </label>
+                          ))}
+                          <label className="check-filter">
+                            <input
+                              type="checkbox"
+                              checked={filters.includeEarlier}
+                              onChange={(e) =>
+                                setFilter("includeEarlier", e.target.checked)
+                              }
+                            />
+                            {t("includeEarlier")}
+                          </label>
+                          <p className="filter-note">{t("filterNote")}</p>
+                        </div>
+                      )}
+                      {rangeInvalid && (
+                        <p className="range-error" role="alert">
+                          {t("invalidRange")}
+                        </p>
+                      )}
+                      {chips.length > 0 && (
+                        <div className="filter-chips">
+                          {chips.map((key) => (
+                            <button
+                              key={key}
+                              onClick={() => setFilter(key, defaults[key])}
+                              aria-label={
+                                t("remove") +
+                                ": " +
+                                t(key === "q" ? "search" : key) +
+                                " " +
+                                String(filters[key])
+                              }
+                            >
+                              {t(key === "q" ? "search" : key)}:{" "}
+                              {key === "includeEarlier" ? (
+                                <Check size={12} />
+                              ) : (
+                                t(
+                                  key === "match"
+                                    ? {
+                                        all: "allWords",
+                                        any: "anyWords",
+                                        phrase: "phrase",
+                                      }[filters.match] || filters.match
+                                    : key === "scope" && filters.scope === "all"
+                                      ? "allFields"
+                                      : String(filters[key]),
+                                )
+                              )}
                               <X size={12} />
                             </button>
-                          </div>
-                        )}
-                      </div>
-                      <div className="deep-search">
-                        <a
-                          href={BASE + "search.html"}
-                          target="_blank"
-                          rel="noreferrer"
-                        >
-                          Search full descriptions with Pagefind
-                          <ArrowUpRight size={11} />
-                        </a>
-                      </div>
-                      <div className="results-meta">
-                        <span>
-                          <b>{fmt(filtered.length)}</b> notices
-                          {filtersOn ? " match your filters" : ""}
-                        </span>
+                          ))}
+                          <button className="clear-filters" onClick={clear}>
+                            {t("clear")}
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                    <div className="results-meta">
+                      <span role="status" aria-live="polite">
+                        {t("matches", { count: fmt(filtered.length) })}
+                      </span>
+                      <div>
                         <label>
-                          Sort by
+                          {t("sort")}
                           <select
-                            aria-label="Sort notices"
                             value={sort}
                             onChange={(e) => setSort(e.target.value)}
                           >
-                            <option value="newest">Newest first</option>
-                            <option value="deadline">Deadline soonest</option>
-                            <option value="value">Highest estimate</option>
+                            {sorts.map((s) => (
+                              <option key={s} value={s}>
+                                {t(
+                                  s === "deadline"
+                                    ? "deadlineSoonest"
+                                    : s === "buyer"
+                                      ? "sortBuyer"
+                                      : s === "title"
+                                        ? "sortTitle"
+                                        : s,
+                                )}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label>
+                          <span className="sr-only">{t("perPage")}</span>
+                          <select
+                            aria-label={t("perPage")}
+                            value={pageSize}
+                            onChange={(e) =>
+                              setPageSize(Number(e.target.value))
+                            }
+                          >
+                            {[15, 30, 60].map((n) => (
+                              <option key={n} value={n}>
+                                {n} / {t("page").toLowerCase()}
+                              </option>
+                            ))}
                           </select>
                         </label>
                       </div>
-                      <div className="notice-table">
-                        <div className="table-header">
-                          <span>NOTICE / BUYER</span>
-                          <span>EST. VALUE</span>
-                          <span>DEADLINE</span>
-                          <span />
-                        </div>
-                        {rows.map((n) => (
-                          <article className="notice-row" key={n.id}>
-                            <div className="notice-main">
-                              <div className="notice-row-labels">
-                                <Status value={n.status} />
-                                <span className="notice-category">
-                                  {n.category}
-                                </span>
-                                {n.flags.length > 0 && (
-                                  <span
-                                    className="flag-mini"
-                                    title={n.flags
-                                      .map((f) => flags[f])
-                                      .join(", ")}
-                                  >
-                                    <Flag size={12} />
-                                    <span className="sr-only">
-                                      Transparency signal
-                                    </span>
-                                  </span>
-                                )}
-                              </div>
+                    </div>
+                    <div className="notice-table">
+                      <div className="table-header">
+                        <span>{t("noticeBuyer")}</span>
+                        <span>
+                          {t("estimate")} / {t("award")}
+                        </span>
+                        <span>{t("deadline")}</span>
+                        <span />
+                      </div>
+                      {rows.map((n) => (
+                        <article className="notice-row" key={n.id}>
+                          <div className="notice-main">
+                            <div className="notice-row-labels">
+                              <Status value={n.status} />
                               <button
-                                className="notice-title"
-                                onClick={() => setSelected(n)}
-                                lang="fi"
-                              >
-                                {n.title}
-                              </button>
-                              <div className="notice-subtitle">
-                                <Building2 size={12} />
-                                <span>{n.buyer}</span>
-                                <i />
-                                <span>{n.region}</span>
-                              </div>
-                            </div>
-                            <div className="notice-value">
-                              <b
-                                className={
-                                  n.estimatedValue === null ? "unknown" : ""
+                                className="notice-category"
+                                onClick={() =>
+                                  setFilter("category", n.category)
                                 }
                               >
-                                {money(n.estimatedValue, n.estimatedCurrency)}
-                              </b>
-                              <small>Published {date(n.published)}</small>
+                                {t(n.category)}
+                              </button>
+                              {n.superseded && (
+                                <span className="muted">{t("earlier")}</span>
+                              )}
+                              {n.flags.length > 0 && (
+                                <span
+                                  className="flag-mini"
+                                  title={n.flags.map((f) => t(f)).join(", ")}
+                                >
+                                  <Flag size={13} />
+                                  <span className="sr-only">
+                                    {n.flags.map((f) => t(f)).join(", ")}
+                                  </span>
+                                </span>
+                              )}
                             </div>
-                            <div className="notice-deadline">
-                              <b>{date(n.deadline)}</b>
-                              <small>
-                                {n.status === "Active" && n.deadline
-                                  ? Math.max(
+                            <button
+                              className="notice-title"
+                              onClick={() => setSelectedId(n.id)}
+                            >
+                              {n.title}
+                            </button>
+                            <div className="notice-subtitle">
+                              <Building2 size={13} />
+                              <button
+                                onClick={() => setFilter("buyer", n.buyer)}
+                              >
+                                {n.buyer}
+                              </button>
+                              <span>
+                                · {n.regions.map((r) => t(r)).join(", ")}
+                              </span>
+                            </div>
+                          </div>
+                          <div className="notice-value">
+                            <span className="sr-only">{t("estimate")}: </span>
+                            <b
+                              className={
+                                n.estimatedValue === null ? "unknown" : ""
+                              }
+                            >
+                              {money(n.estimatedValue, n.estimatedCurrency)}
+                            </b>
+                            <small>
+                              {t("award")}:{" "}
+                              {money(n.awardedValue, n.awardedCurrency)}
+                            </small>
+                            <small>
+                              {t("published")} {date(n.published)}
+                            </small>
+                          </div>
+                          <div className="notice-deadline">
+                            <b>{date(n.deadline)}</b>
+                            <small>
+                              {n.status === "Active" && n.deadline
+                                ? t("daysLeft", {
+                                    count: Math.max(
                                       0,
                                       Math.ceil(
                                         (Date.parse(n.deadline) - Date.now()) /
-                                          day,
+                                          86400000,
                                       ),
-                                    ) + " days left"
-                                  : n.status === "Awarded"
-                                    ? "Award notice"
-                                    : n.status === "Planning"
-                                      ? "Planning stage"
-                                      : "—"}
-                              </small>
-                            </div>
-                            <button
-                              className={
-                                "save-button " +
-                                (saved.includes(n.id) ? "saved" : "")
-                              }
-                              aria-label={
-                                (saved.includes(n.id) ? "Unsave " : "Save ") +
-                                n.title
-                              }
-                              onClick={() => toggleSave(n.id)}
-                            >
-                              <Bookmark
-                                size={17}
-                                fill={
-                                  saved.includes(n.id) ? "currentColor" : "none"
-                                }
-                              />
-                            </button>
-                          </article>
-                        ))}
-                        {!rows.length && (
-                          <div className="empty-state">
-                            <Search size={28} />
-                            <h3>
-                              {view === "saved" && !saved.length
-                                ? "A little curiosity goes a long way."
-                                : "No notices found."}
-                            </h3>
-                            <p>
-                              {view === "saved" && !saved.length
-                                ? "Bookmark a notice to keep it here for your next visit."
-                                : "Try a broader search or clear your filters."}
-                            </p>
-                            <button
-                              className="button secondary"
-                              onClick={
-                                view === "saved" && !saved.length
-                                  ? () => navigate("explore")
-                                  : clear
-                              }
-                            >
-                              {view === "saved" && !saved.length
-                                ? "Explore notices"
-                                : "Clear filters"}
-                              <ArrowRight size={15} />
-                            </button>
+                                    ),
+                                  })
+                                : t(n.status)}
+                            </small>
                           </div>
-                        )}
-                      </div>
-                      {pageCount > 0 && (
-                        <div className="pagination">
-                          <span>
-                            Showing {fmt((page - 1) * 15 + 1)}–
-                            {fmt(Math.min(page * 15, filtered.length))} of{" "}
-                            {fmt(filtered.length)}
-                          </span>
-                          <div>
-                            <button
-                              onClick={() => setPage((p) => Math.max(1, p - 1))}
-                              disabled={page === 1}
-                              aria-label="Previous page"
-                            >
-                              <ChevronLeft size={16} />
-                            </button>
-                            <span>
-                              {page} <i>/</i> {pageCount}
-                            </span>
-                            <button
-                              onClick={() =>
-                                setPage((p) => Math.min(pageCount, p + 1))
+                          <button
+                            className={
+                              "icon-button save-button " +
+                              (saved.includes(n.id) ? "saved" : "")
+                            }
+                            onClick={() => toggleSave(n.id)}
+                            aria-label={
+                              t(saved.includes(n.id) ? "unsave" : "save") +
+                              ": " +
+                              n.title
+                            }
+                            aria-pressed={saved.includes(n.id)}
+                          >
+                            <Bookmark
+                              size={18}
+                              fill={
+                                saved.includes(n.id) ? "currentColor" : "none"
                               }
-                              disabled={page === pageCount}
-                              aria-label="Next page"
-                            >
-                              <ChevronRight size={16} />
-                            </button>
-                          </div>
+                            />
+                          </button>
+                        </article>
+                      ))}
+                      {!rows.length && (
+                        <div className="empty-state">
+                          <Search size={32} />
+                          <h3>
+                            {t(
+                              !notices.length
+                                ? "noImported"
+                                : view === "saved" && !saved.length
+                                  ? "noSaved"
+                                  : "noResults",
+                            )}
+                          </h3>
+                          <p>
+                            {t(
+                              view === "saved" && !saved.length
+                                ? "noSavedBody"
+                                : "noResultsBody",
+                            )}
+                          </p>
+                          <button
+                            className="button secondary"
+                            onClick={
+                              view === "saved" && !saved.length
+                                ? () => navigate("explore")
+                                : clear
+                            }
+                          >
+                            {t(
+                              view === "saved" && !saved.length
+                                ? "explore"
+                                : "clear",
+                            )}
+                            <ArrowRight size={16} />
+                          </button>
                         </div>
                       )}
-                    </section>
-                    <aside className="insights-rail">
-                      <section className="pulse-card">
-                        <span className="eyebrow">PROCUREMENT PULSE</span>
-                        <div className="pulse-title">
-                          <h3>A week in the open</h3>
-                          <TrendingUp size={17} />
-                        </div>
-                        <strong>
-                          {fmt(lastWeek)} <small>new notices</small>
-                        </strong>
-                        <div
-                          className="bar-chart"
-                          aria-label="Notices per week over the last eight weeks"
-                        >
-                          {weekCounts.map((c, i) => (
-                            <div key={i} title={fmt(c) + " notices"}>
-                              <span
-                                style={{
-                                  height:
-                                    Math.max(
-                                      3,
-                                      (c / Math.max(1, ...weekCounts)) * 75,
-                                    ) + "px",
-                                }}
-                              />
-                              <small>
-                                {i === 0 ? "8w" : i === 7 ? "Now" : ""}
-                              </small>
-                            </div>
-                          ))}
-                        </div>
-                        <p>
-                          {trend !== null ? (
-                            <>
-                              <span
-                                className={trend >= 0 ? "positive" : "muted"}
-                              >
-                                {trend >= 0 ? "+" : ""}
-                                {trend}%
-                              </span>{" "}
-                              vs. the preceding 7 days
-                            </>
-                          ) : (
-                            "Publication activity in the snapshot"
-                          )}
-                        </p>
-                      </section>
-                      <section className="category-card">
-                        <div className="rail-heading">
-                          <h3>What’s being bought?</h3>
-                          <Layers3 size={16} />
-                        </div>
-                        <p>Categories in your current view</p>
-                        {byCategory.map((c, i) => (
-                          <button
-                            key={c.name}
-                            onClick={() => setCategory(c.name)}
-                          >
-                            <div>
-                              <span>{c.name}</span>
-                              <b>{fmt(c.count)}</b>
-                            </div>
-                            <div className="category-track">
-                              <span
-                                style={{
-                                  width:
-                                    (c.count / Math.max(1, filtered.length)) *
-                                      100 +
-                                    "%",
-                                  background: [
-                                    "#386557",
-                                    "#6b8d6c",
-                                    "#8da57d",
-                                    "#b1bc95",
-                                    "#cbd2b9",
-                                  ][i],
-                                }}
-                              />
-                            </div>
-                          </button>
-                        ))}
-                      </section>
-                      <section className="open-data-card">
-                        <div className="rail-icon">
-                          <ArrowDownToLine size={20} />
-                        </div>
-                        <h3>
-                          Your questions.
-                          <br />
-                          Your data.
-                        </h3>
-                        <p>
-                          Take the dataset further. Free to explore, download
-                          and build on.
-                        </p>
-                        <button
-                          onClick={() => {
-                            exportData(filtered, "csv");
-                            setToast("CSV downloaded");
-                          }}
-                        >
-                          Download this view
-                          <ArrowUpRight size={16} />
-                        </button>
-                        <a
-                          href={BASE + "data/manifest.json"}
-                          target="_blank"
-                          rel="noreferrer"
-                        >
-                          All data files & feeds <ArrowRight size={12} />
-                        </a>
-                      </section>
-                      <div className="source-caption">
-                        <span className="live-dot" />
-                        <span>
-                          Collected from Hilma.
-                          <br />
-                          Always verify the original notice.
-                        </span>
-                      </div>
-                    </aside>
-                  </div>
+                    </div>
+                    <Pagination
+                      page={visiblePage}
+                      count={filtered.length}
+                      size={pageSize}
+                      onChange={setPage}
+                    />
+                    <div className="results-foot">
+                      <span>{t("original")}</span>
+                      <a
+                        className="text-link"
+                        href={BASE + "search.html?lang=" + language}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        {t("deepSearch")}
+                        <ArrowUpRight size={14} />
+                      </a>
+                    </div>
+                  </section>
                 </>
+              )}
+
+              {view === "categories" && (
+                <section className="directory-page">
+                  <span className="eyebrow">{t("categories")}</span>
+                  <h1>{t("categoryHeading")}</h1>
+                  <p className="page-lead">{t("categoryBody")}</p>
+                  <label className="search-field directory-search">
+                    <Search size={19} />
+                    <input
+                      type="search"
+                      value={directoryQuery}
+                      onChange={(e) => setDirectoryQuery(e.target.value)}
+                      placeholder={t("searchCategories")}
+                      aria-label={t("searchCategories")}
+                    />
+                  </label>
+                  <div className="category-grid">
+                    {categoryStats
+                      .filter((c) =>
+                        fold(t(c.name)).includes(fold(directoryQuery)),
+                      )
+                      .map((c, i) => (
+                        <button
+                          className="category-tile"
+                          key={c.name}
+                          onClick={() => chooseCategory(c.name)}
+                        >
+                          <span className="tile-top">
+                            <span className="tile-number">
+                              {String(i + 1).padStart(2, "0")}
+                            </span>
+                            <ArrowUpRight size={21} />
+                          </span>
+                          <h2>{t(c.name)}</h2>
+                          <div>
+                            <strong>{fmt(c.count)}</strong> {t("notices")}
+                            <span className="category-active">
+                              {fmt(c.active)} {t("active")}
+                            </span>
+                          </div>
+                          <span className="tile-footer">
+                            {t("viewNotices")}
+                            <ArrowRight size={15} />
+                          </span>
+                        </button>
+                      ))}
+                  </div>
+                  {!categoryStats.some((c) =>
+                    fold(t(c.name)).includes(fold(directoryQuery)),
+                  ) && <div className="empty-state">{t("noCategories")}</div>}
+                </section>
               )}
               {view === "buyers" && (
                 <section className="directory-page">
-                  <span className="eyebrow">BEHIND EVERY PURCHASE</span>
-                  <h1>Meet the public buyers.</h1>
-                  <p className="page-lead">
-                    See which organisations are procuring, what they need, and
-                    where they operate.
-                  </p>
+                  <span className="eyebrow">{t("buyers")}</span>
+                  <h1>{t("buyerHeading")}</h1>
+                  <p className="page-lead">{t("buyerBody")}</p>
                   <label className="search-field directory-search">
-                    <Search size={18} />
+                    <Search size={19} />
                     <input
                       type="search"
-                      aria-label="Search buyers"
-                      placeholder="Search by organisation or business ID…"
-                      value={buyerQuery}
-                      onChange={(e) => {
-                        setBuyerQuery(e.target.value);
-                        setPage(1);
-                      }}
+                      value={directoryQuery}
+                      onChange={(e) => setDirectoryQuery(e.target.value)}
+                      placeholder={t("searchBuyers")}
+                      aria-label={t("searchBuyers")}
                     />
                   </label>
                   <div className="section-heading">
-                    <h2>{fmt(buyers.length)} public buyers</h2>
+                    <h2>
+                      {fmt(buyers.length)} {t("buyers").toLowerCase()}
+                    </h2>
                     <span className="muted">
-                      Within the {data.windowDays}-day snapshot
+                      {t("window", { days: data.windowDays })}
                     </span>
                   </div>
                   <div className="buyer-grid">
@@ -1629,129 +1747,132 @@ export default function App() {
                         key={b.name}
                         onClick={() => {
                           navigate("explore");
-                          setBuyer(b.name);
+                          setFilters({ ...defaults, buyer: b.name });
                         }}
                       >
-                        <span className="buyer-avatar">
-                          <Building2 size={22} />
+                        <span className="tile-top">
+                          <span className="buyer-avatar">
+                            <Building2 size={23} />
+                          </span>
+                          <ArrowUpRight size={20} />
                         </span>
-                        <ArrowUpRight className="buyer-arrow" size={18} />
                         <h3>{b.name}</h3>
-                        <p>{[...b.regions].slice(0, 2).join(" · ")}</p>
-                        <div>
+                        <p>
+                          {[...b.regions]
+                            .slice(0, 2)
+                            .map((r) => t(r))
+                            .join(" · ")}
+                        </p>
+                        <div className="buyer-stats">
                           <span>
-                            <b>{fmt(b.count)}</b>notices
+                            <b>{fmt(b.count)}</b>
+                            {t("notices")}
                           </span>
                           <span>
-                            <b>{fmt(b.active)}</b>active
-                          </span>
-                          <span>
-                            <b>{b.known ? money(b.value) : "Unknown"}</b>
-                            reported est.
+                            <b>{fmt(b.active)}</b>
+                            {t("active")}
                           </span>
                         </div>
+                        <p>
+                          {t("estimates")}:{" "}
+                          <b>{b.known ? money(b.value) : t("unknown")}</b>
+                        </p>
                         <small>
-                          {b.id || "Business ID not reported"}
-                          {b.id && companies[b.id]?.found
-                            ? " · PRH verified"
-                            : ""}
+                          {t("estimateCoverage", { count: b.known })}
+                        </small>
+                        <small>
+                          {t("businessId")}: {b.id || t("unknown")}
+                          {b.id && companies[b.id]?.found && (
+                            <> · {t("verified")}</>
+                          )}
                         </small>
                       </button>
                     ))}
                   </div>
                   {!buyers.length && (
                     <div className="empty-state">
-                      <Building2 />
-                      <h3>No buyers match your search.</h3>
+                      <Building2 size={30} />
+                      <h3>{t("noBuyers")}</h3>
                     </div>
                   )}
-                  <div className="pagination">
-                    <span>
-                      Page {page} of{" "}
-                      {Math.max(1, Math.ceil(buyers.length / 18))}
-                    </span>
-                    <div>
-                      <button
-                        disabled={page <= 1}
-                        onClick={() => setPage((p) => p - 1)}
-                        aria-label="Previous buyers"
-                      >
-                        <ChevronLeft size={17} />
-                      </button>
-                      <button
-                        disabled={page >= Math.ceil(buyers.length / 18)}
-                        onClick={() => setPage((p) => p + 1)}
-                        aria-label="Next buyers"
-                      >
-                        <ChevronRight size={17} />
-                      </button>
-                    </div>
-                  </div>
+                  <Pagination
+                    page={page}
+                    count={buyers.length}
+                    size={18}
+                    onChange={setPage}
+                  />
                 </section>
               )}
               {view === "spending" && (
                 <section className="directory-page">
-                  <span className="eyebrow">BEYOND THE TENDER</span>
-                  <h1>What was actually spent?</h1>
-                  <p className="page-lead">
-                    Historical purchase invoices. A different lens on public
-                    money.
-                  </p>
-                  <div className="spending-disclaimer">
-                    <CircleHelp size={20} />
-                    <p>
-                      {spending?.coverage ||
-                        "Official invoice data has not been imported yet."}
-                    </p>
+                  <span className="eyebrow">{t("spending")}</span>
+                  <h1>{t("spendingHeading")}</h1>
+                  <p className="page-lead">{t("spendingBody")}</p>
+                  <div className="callout">
+                    <CircleHelp size={22} />
+                    <p>{t("spendingCoverage")}</p>
                   </div>
                   {spending?.status === "ok" ? (
                     <>
                       <div className="metrics spending-metrics">
                         <div className="metric">
                           <span>
-                            Recorded spending
+                            {t("recorded")}
                             <Wallet size={17} />
                           </span>
                           <strong>{money(spending.total)}</strong>
                           <small>
-                            {date(spending.periodStart, true)} –{" "}
-                            {date(spending.periodEnd, true)}
+                            {date(spending.periodStart)} –{" "}
+                            {date(spending.periodEnd)}
                           </small>
                         </div>
                         <div className="metric">
                           <span>
-                            Accounting lines
-                            <FileText size={17} />
+                            {t("accounting")}
+                            <Layers3 size={17} />
                           </span>
                           <strong>{fmt(spending.rows)}</strong>
-                          <small>Includes refunds and credit notes</small>
+                          <small>{t("credits")}</small>
                         </div>
                         <div className="metric">
                           <span>
-                            Purchasing organisations
+                            {t("organisations")}
                             <Building2 size={17} />
                           </span>
                           <strong>{fmt(spending.buyers.length)}</strong>
                           <small>
-                            Within the source file for {spending.year}
+                            {t("sourceYear", { year: spending.year || "" })}
                           </small>
                         </div>
                       </div>
                       <div className="spending-toolbar">
-                        <div className="status-tabs">
-                          {["buyers", "suppliers", "categories"].map((t) => (
-                            <button
-                              key={t}
-                              className={spendingTab === t ? "active-tab" : ""}
-                              onClick={() => {
-                                setSpendingTab(t);
-                                setSpendingQuery("");
-                                setSpendingPage(1);
-                              }}
-                            >
-                              {t[0].toUpperCase() + t.slice(1)}
-                            </button>
-                          ))}
+                        <div
+                          className="status-tabs"
+                          role="group"
+                          aria-label={t("spending")}
+                        >
+                          {(["buyers", "suppliers", "categories"] as const).map(
+                            (tab) => (
+                              <button
+                                key={tab}
+                                className={
+                                  spendingTab === tab ? "active-tab" : ""
+                                }
+                                aria-pressed={spendingTab === tab}
+                                onClick={() => {
+                                  setSpendingTab(tab);
+                                  setSpendingQuery("");
+                                  setSpendingPage(1);
+                                }}
+                              >
+                                {t(
+                                  tab === "categories"
+                                    ? "spendingCategories"
+                                    : tab,
+                                )}
+                              </button>
+                            ),
+                          )}
                         </div>
                         <a
                           className="button secondary small"
@@ -1759,17 +1880,17 @@ export default function App() {
                           target="_blank"
                           rel="noreferrer"
                         >
-                          Official dataset
+                          {t("officialDataset")}
                           <ExternalLink size={15} />
                         </a>
                       </div>
                       <label className="search-field directory-search">
-                        <Search size={17} />
+                        <Search size={18} />
                         <input
                           type="search"
-                          placeholder={"Search " + spendingTab + "…"}
-                          aria-label={"Search spending " + spendingTab}
                           value={spendingQuery}
+                          aria-label={t("searchSpending")}
+                          placeholder={t("searchSpending")}
                           onChange={(e) => {
                             setSpendingQuery(e.target.value);
                             setSpendingPage(1);
@@ -1778,77 +1899,58 @@ export default function App() {
                       </label>
                       <div className="spending-list">
                         <div className="spending-row heading">
-                          <span>{spendingTab.toUpperCase()}</span>
-                          <span>INVOICE LINES</span>
-                          <span>NET AMOUNT</span>
+                          <span>
+                            {t(
+                              spendingTab === "categories"
+                                ? "spendingCategories"
+                                : spendingTab,
+                            )}
+                          </span>
+                          <span>{t("invoiceLines")}</span>
+                          <span>{t("netAmount")}</span>
                         </div>
                         {spendingRows
                           .slice((spendingPage - 1) * 25, spendingPage * 25)
-                          .map((r, i) => (
+                          .map((row, i) => (
                             <div key={i} className="spending-row">
                               <span>
-                                <b>{r.name}</b>
-                                {"businessId" in r && (
-                                  <small>{String(r.businessId || "")}</small>
+                                <b>{row.name}</b>
+                                {"businessId" in row && (
+                                  <small>{String(row.businessId || "")}</small>
                                 )}
                               </span>
-                              <span>{fmt(r.rows)}</span>
-                              <strong>{money(r.total)}</strong>
+                              <span>{fmt(row.rows)}</span>
+                              <strong>{money(row.total)}</strong>
                             </div>
                           ))}
                       </div>
-                      <div className="pagination">
-                        <span>
-                          {fmt(spendingRows.length)} results ·{" "}
-                          {spendingTab === "suppliers"
-                            ? "top 250 suppliers only"
-                            : "all source groups"}
-                        </span>
-                        <div>
-                          <button
-                            disabled={spendingPage === 1}
-                            onClick={() => setSpendingPage((p) => p - 1)}
-                            aria-label="Previous spending page"
-                          >
-                            <ChevronLeft size={16} />
-                          </button>
-                          <span>
-                            {spendingPage} /{" "}
-                            {Math.max(1, Math.ceil(spendingRows.length / 25))}
-                          </span>
-                          <button
-                            disabled={
-                              spendingPage >=
-                              Math.ceil(spendingRows.length / 25)
-                            }
-                            onClick={() => setSpendingPage((p) => p + 1)}
-                            aria-label="Next spending page"
-                          >
-                            <ChevronRight size={16} />
-                          </button>
-                        </div>
-                      </div>
+                      {!spendingRows.length && (
+                        <div className="empty-state">{t("noSpending")}</div>
+                      )}
+                      <Pagination
+                        page={spendingPage}
+                        count={spendingRows.length}
+                        size={25}
+                        onChange={setSpendingPage}
+                      />
                       <p className="source-note">
-                        State Treasury / Tutkihankintoja · CC BY 4.0 · imported{" "}
-                        {date(spending.fetchedAt, true)}. Buyer matching to
-                        individual tenders is not inferred.
+                        Valtiokonttori / Statskontoret / State Treasury ·
+                        Tutkihankintoja · CC BY 4.0 · {t("updated")}{" "}
+                        {date(spending.fetchedAt)}
+                        {spendingTab === "suppliers" && <> · {t("top250")}</>}
                       </p>
                     </>
                   ) : (
                     <div className="empty-state">
-                      <Wallet size={30} />
-                      <h3>The spending snapshot is not ready yet.</h3>
-                      <p>
-                        Use the official source while the invoice import is
-                        being set up.
-                      </p>
+                      <Wallet size={32} />
+                      <h2>{t("spendingUnavailable")}</h2>
                       <a
                         className="button primary"
                         href="https://avoindata.suomi.fi/data/fi/dataset/ba96a638-67bf-4747-b084-c78ccfe052e9"
                         target="_blank"
                         rel="noreferrer"
                       >
-                        Official invoice data
+                        {t("officialDataset")}
                         <ArrowUpRight size={16} />
                       </a>
                     </div>
@@ -1859,14 +1961,24 @@ export default function App() {
           )}
           <footer className="page-footer">
             <span>
-              <Logo />
-              <b>avoin.</b> Public money, public knowledge.
+              <Mole small />
+              <b>tilimyyrä</b>
+              <span>{t("independent")}</span>
             </span>
             <div>
-              <button onClick={() => navigate("about")}>
-                Sources & methodology <ArrowUpRight size={12} />
+              <button className="text-link" onClick={() => navigate("about")}>
+                {t("about")}
+                <ArrowUpRight size={13} />
               </button>
-              <span>Independent. Open source. Open to everyone.</span>
+              <a
+                className="text-link"
+                href="https://github.com/Savvyboi/procumonitor"
+                target="_blank"
+                rel="noreferrer"
+              >
+                GitHub
+                <ArrowUpRight size={13} />
+              </a>
             </div>
           </footer>
         </main>
@@ -1874,89 +1986,66 @@ export default function App() {
       {selected && (
         <NoticeDialog
           n={selected}
-          onClose={() => setSelected(null)}
+          companies={companies}
           saved={saved.includes(selected.id)}
           onSave={() => toggleSave(selected.id)}
-          companies={companies}
+          onClose={() => setSelectedId(null)}
         />
       )}
-      {showFeeds && (
-        <div
-          className="feed-overlay"
-          onClick={(e) => {
-            if (e.target === e.currentTarget) setShowFeeds(false);
-          }}
-        >
-          <section
-            className="feed-panel"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="feeds-title"
-          >
-            <button
-              className="icon-button feed-close"
-              aria-label="Close feeds"
-              onClick={() => setShowFeeds(false)}
-            >
-              <X size={22} />
-            </button>
-            <span className="rail-icon">
-              <Rss size={22} />
-            </span>
-            <h2 id="feeds-title">Keep the public picture in view.</h2>
-            <p>
-              Add an RSS feed to your reader. No account needed. Feeds include
-              the 100 latest matching notices.
-            </p>
+      {feedOpen && (
+        <Modal title={t("feeds")} onClose={() => setFeedOpen(false)}>
+          <div className="modal-content">
+            <h2>{t("feeds")}</h2>
+            <p>{t("feedBody")}</p>
             <a
-              className="feed-all"
+              className="button primary feed-all"
               href={BASE + "feeds/all.xml"}
               target="_blank"
               rel="noreferrer"
             >
-              <Rss size={17} />
-              All procurement notices
-              <ArrowUpRight size={17} />
+              <Rss size={18} />
+              {t("allNotices")}
+              <ArrowUpRight size={16} />
             </a>
-            <h3>By region</h3>
+            <h3>{t("byRegion")}</h3>
             <div className="feed-links">
-              {regions.map((r) => (
+              {options.regions.map((region) => (
                 <a
-                  key={r}
-                  href={BASE + "feeds/regions/" + slug(r) + ".xml"}
+                  key={region}
+                  href={BASE + "feeds/regions/" + slug(region) + ".xml"}
                   target="_blank"
                   rel="noreferrer"
                 >
-                  {r}
+                  {t(region)}
                   <Rss size={13} />
                 </a>
               ))}
             </div>
-            <h3>By buyer type</h3>
+            <h3>{t("byBuyerType")}</h3>
             <div className="feed-links">
-              {[...new Set(latest.map((n) => n.buyerType))].sort().map((t) => (
+              {options.buyerTypes.map((type) => (
                 <a
-                  key={t}
-                  href={BASE + "feeds/buyers/" + slug(t) + ".xml"}
+                  key={type}
+                  href={BASE + "feeds/buyers/" + slug(type) + ".xml"}
                   target="_blank"
                   rel="noreferrer"
                 >
-                  {t}
+                  {t(type)}
                   <Rss size={13} />
                 </a>
               ))}
             </div>
-            <small className="muted">
-              Paste the link address into your reader’s “add feed” option.
-            </small>
-          </section>
-        </div>
-      )}
-      {toast && (
-        <div className="toast" role="status">
-          <Check size={17} />
-          {toast}
-        </div>
+            <a
+              className="text-link"
+              href={BASE + "data/manifest.json"}
+              target="_blank"
+              rel="noreferrer"
+            >
+              {t("allData")}
+              <ArrowRight size={14} />
+            </a>
+          </div>
+        </Modal>
       )}
     </div>
   );

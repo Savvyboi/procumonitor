@@ -1,5 +1,5 @@
 {
-  "name": "avoin-procurement",
+  "name": "tilimyyra-procurement",
   "version": "1.0.0",
   "private": true,
   "type": "module",
@@ -8,7 +8,7 @@
     "build": "tsc -b && vite build && node scripts/build-artifacts.mjs && pagefind --site dist --root-selector main",
     "preview": "vite preview --host 127.0.0.1",
     "ingest": "node scripts/ingest.mjs",
-    "test": "node --test tests/*.test.mjs"
+    "test": "node --experimental-strip-types --test tests/*.test.mjs"
   },
   "dependencies": {
     "lucide-react": "^0.468.0",
