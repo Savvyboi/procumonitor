@@ -6,6 +6,7 @@ import {
   Bookmark,
   Building2,
   Check,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   CircleHelp,
@@ -105,6 +106,8 @@ async function loadNotices(): Promise<Dataset> {
 function exportData(notices: Notice[], kind: "csv" | "json") {
   const keys = [
     "id",
+    "noticeId",
+    "noticeNumber",
     "title",
     "buyer",
     "businessId",
@@ -122,6 +125,12 @@ function exportData(notices: Notice[], kind: "csv" | "json") {
     "awardedCurrency",
     "winners",
     "flags",
+    "procedure",
+    "documentsUrl",
+    "fullContentAvailable",
+    "plannedValueRange",
+    "relatedIds",
+    "lots",
     "sourceUrl",
   ] as const;
   const cell = (value: unknown) => {
@@ -138,7 +147,19 @@ function exportData(notices: Notice[], kind: "csv" | "json") {
       : "\uFEFF" +
         keys.join(",") +
         "\r\n" +
-        notices.map((n) => keys.map((k) => cell(n[k])).join(",")).join("\r\n");
+        notices
+          .map((n) =>
+            keys
+              .map((k) =>
+                cell(
+                  k === "lots" || k === "plannedValueRange"
+                    ? JSON.stringify(n[k])
+                    : n[k],
+                ),
+              )
+              .join(","),
+          )
+          .join("\r\n");
   const url = URL.createObjectURL(
     new Blob([content], {
       type: kind === "json" ? "application/json" : "text/csv;charset=utf-8;",
@@ -217,17 +238,19 @@ function Modal({
 function NoticeDialog({
   n,
   companies,
+  notices,
   saved,
   onSave,
   onClose,
 }: {
   n: Notice;
   companies: Record<string, Company>;
+  notices: Notice[];
   saved: boolean;
   onSave: () => void;
   onClose: () => void;
 }) {
-  const { t, money, date, fmt } = useI18n();
+  const { language, t, money, date, fmt } = useI18n();
   const company = n.businessId ? companies[n.businessId] : null;
   return (
     <Modal
@@ -249,6 +272,14 @@ function NoticeDialog({
               t("estimate"),
               money(n.estimatedValue, n.estimatedCurrency, false),
             ],
+            ...(n.plannedValueRange
+              ? [
+                  [
+                    t("plannedRange"),
+                    `${money(n.plannedValueRange.min, n.plannedValueRange.minCurrency, false)} – ${money(n.plannedValueRange.max, n.plannedValueRange.maxCurrency, false)}`,
+                  ],
+                ]
+              : []),
             [t("award"), money(n.awardedValue, n.awardedCurrency, false)],
             [t("published"), date(n.published)],
             [t("modifiedDate"), date(n.modified)],
@@ -308,11 +339,34 @@ function NoticeDialog({
               {n.lots.map((l) => (
                 <div key={l.id}>
                   <strong>{l.title || l.id}</strong>
+                  {l.description && (
+                    <p className="description">{l.description}</p>
+                  )}
+                  {!!l.cpvCodes?.length && (
+                    <p>
+                      {t("classification")}: {l.cpvCodes.join(", ")}
+                    </p>
+                  )}
+                  {!!l.regions?.length && (
+                    <p>
+                      {t("region")}: {l.regions.map((r) => t(r)).join(", ")}
+                    </p>
+                  )}
+                  {l.deadline && (
+                    <p>
+                      {t("deadlineHelsinki")}: {date(l.deadline, true)}
+                    </p>
+                  )}
                   <span>
                     {l.bids === null
                       ? t("unknownBids")
                       : t("bids", { count: fmt(l.bids) })}
                   </span>
+                  {l.winners.length > 0 && (
+                    <p>
+                      {t("awardees")}: {l.winners.join("; ")}
+                    </p>
+                  )}
                   <small>
                     {t("estimate")}:{" "}
                     {money(l.estimatedValue, l.estimatedCurrency)} ·{" "}
@@ -335,6 +389,38 @@ function NoticeDialog({
             </div>
           </div>
         )}
+        {n.relatedIds.length > 0 && (
+          <>
+            <h3>{t("previousNotices")}</h3>
+            <div className="related-notices">
+              {n.relatedIds.map((id) =>
+                notices.some((related) => related.id === id) ? (
+                  <a
+                    className="text-link"
+                    key={id}
+                    href={
+                      BASE +
+                      "?notice=" +
+                      encodeURIComponent(id) +
+                      "&lang=" +
+                      language
+                    }
+                  >
+                    {id}
+                    <ArrowUpRight size={14} />
+                  </a>
+                ) : (
+                  <span key={id}>
+                    {id} · {t("outsideSnapshot")}
+                  </span>
+                ),
+              )}
+            </div>
+          </>
+        )}
+        <p className="source-note">
+          {t(n.fullContentAvailable ? "fullContent" : "summaryContent")}
+        </p>
         <p className="source-note">{t("noticeSource")}</p>
       </div>
       <div className="modal-footer">
@@ -512,13 +598,8 @@ function Explorer() {
       : 15,
   );
   const [page, setPage] = useState(1);
-  const [advanced, setAdvanced] = useState(() =>
-    Object.entries(readFilters(params)).some(
-      ([k, v]) =>
-        !["q", "region", "category", "status"].includes(k) &&
-        v !== defaults[k as keyof Filters],
-    ),
-  );
+  const [advanced, setAdvanced] = useState(false);
+  const searchPanelRef = useRef<HTMLDetailsElement>(null);
   const [theme, setTheme] = useState(
     () =>
       stored("tilimyyra-theme") ||
@@ -667,6 +748,7 @@ function Explorer() {
         !document.querySelector("dialog[open]")
       ) {
         e.preventDefault();
+        if (searchPanelRef.current) searchPanelRef.current.open = true;
         searchRef.current?.focus();
       }
       if (e.key === "Escape") setMobile(false);
@@ -1061,100 +1143,111 @@ function Explorer() {
                         <span>· {t("schedule")}</span>
                       </div>
                     </div>
-                    <div className="mascot-card">
-                      <div className="mascot-orbit" />
+                    <div className="hero-mascot">
                       <Mole />
-                      <span>{t("mascotNote")}</span>
-                      <span className="mascot-signature">
-                        TILIMYYRÄ / {new Date(data.fetchedAt).getFullYear()}
-                      </span>
                     </div>
                   </section>
-                  <section className="metrics" aria-label={t("snapshot")}>
-                    <div className="metric">
-                      <span>
-                        {t("snapshot")}
-                        <Layers3 size={17} />
-                      </span>
-                      <strong>{fmt(latest.length)}</strong>
-                      <small>{t("window", { days: data.windowDays })}</small>
-                    </div>
-                    <div className="metric">
-                      <span>
-                        {t("activeCount")}
-                        <ArrowUpRight size={18} />
-                      </span>
-                      <strong>
-                        {fmt(activeCount)}
-                        <i className="live-dot" />
-                      </strong>
-                      <small>{t("activeHint")}</small>
-                    </div>
-                    <div className="metric">
-                      <span>
-                        {t("estimates")}
-                        <Wallet size={17} />
-                      </span>
-                      <strong>
-                        {estimates.length ? money(totalEstimate) : t("unknown")}
-                      </strong>
-                      <small>
-                        {t("estimateCoverage", {
-                          count: fmt(estimates.length),
-                        })}
-                      </small>
-                    </div>
-                    <button
-                      className="metric metric-button"
-                      onClick={() => navigate("signals")}
-                    >
-                      <span>
-                        {t("signals")}
-                        <Flag size={17} />
-                      </span>
-                      <strong>{fmt(flaggedCount)}</strong>
-                      <small>
-                        {t("signalHint")} <ArrowRight size={13} />
-                      </small>
-                    </button>
-                  </section>
-                  {view === "explore" && (
-                    <section className="category-strip">
-                      <div>
-                        <span className="eyebrow">{t("categories")}</span>
-                        <button
-                          className="text-link"
-                          onClick={() => navigate("categories")}
-                        >
-                          {t("allCategories")}
-                          <ArrowRight size={15} />
-                        </button>
+                  <details className="overview-panel disclosure">
+                    <summary>
+                      <Layers3 size={18} />
+                      <span>{t("overview")}</span>
+                      <ChevronDown size={18} className="disclosure-chevron" />
+                    </summary>
+                    <section className="metrics" aria-label={t("snapshot")}>
+                      <div className="metric">
+                        <span>
+                          {t("snapshot")}
+                          <Layers3 size={17} />
+                        </span>
+                        <strong>{fmt(latest.length)}</strong>
+                        <small>{t("window", { days: data.windowDays })}</small>
                       </div>
-                      <div className="category-shortcuts">
-                        {categoryStats.slice(0, 6).map((c) => (
-                          <button
-                            key={c.name}
-                            className={
-                              filters.category === c.name ? "chosen" : ""
-                            }
-                            onClick={() =>
-                              setFilter(
-                                "category",
-                                filters.category === c.name ? "" : c.name,
-                              )
-                            }
-                          >
-                            {t(c.name)}
-                            <span>{fmt(c.count)}</span>
-                          </button>
-                        ))}
+                      <div className="metric">
+                        <span>
+                          {t("activeCount")}
+                          <ArrowUpRight size={18} />
+                        </span>
+                        <strong>
+                          {fmt(activeCount)}
+                          <i className="live-dot" />
+                        </strong>
+                        <small>{t("activeHint")}</small>
                       </div>
+                      <div className="metric">
+                        <span>
+                          {t("estimates")}
+                          <Wallet size={17} />
+                        </span>
+                        <strong>
+                          {estimates.length
+                            ? money(totalEstimate)
+                            : t("unknown")}
+                        </strong>
+                        <small>
+                          {t("estimateCoverage", {
+                            count: fmt(estimates.length),
+                          })}
+                        </small>
+                      </div>
+                      <button
+                        className="metric metric-button"
+                        onClick={() => navigate("signals")}
+                      >
+                        <span>
+                          {t("signals")}
+                          <Flag size={17} />
+                        </span>
+                        <strong>{fmt(flaggedCount)}</strong>
+                        <small>
+                          {t("signalHint")} <ArrowRight size={13} />
+                        </small>
+                      </button>
                     </section>
-                  )}
+                    {view === "explore" && (
+                      <section className="category-strip">
+                        <div>
+                          <span className="eyebrow">{t("categories")}</span>
+                          <button
+                            className="text-link"
+                            onClick={() => navigate("categories")}
+                          >
+                            {t("allCategories")}
+                            <ArrowRight size={15} />
+                          </button>
+                        </div>
+                        <div className="category-shortcuts">
+                          {categoryStats.slice(0, 6).map((c) => (
+                            <button
+                              key={c.name}
+                              className={
+                                filters.category === c.name ? "chosen" : ""
+                              }
+                              onClick={() =>
+                                setFilter(
+                                  "category",
+                                  filters.category === c.name ? "" : c.name,
+                                )
+                              }
+                            >
+                              {t(c.name)}
+                              <span>{fmt(c.count)}</span>
+                            </button>
+                          ))}
+                        </div>
+                      </section>
+                    )}
+                    <p className="coverage-note">
+                      {t("hilmaCoverage", {
+                        full: fmt(
+                          notices.filter((n) => n.fullContentAvailable).length,
+                        ),
+                        count: fmt(notices.length),
+                      })}
+                    </p>
+                  </details>
                   <section className="results-panel" id="results">
                     <div className="section-heading">
                       <div>
-                        <span className="eyebrow">{t("noticeboard")}</span>
                         <h2>
                           {t(
                             view === "saved"
@@ -1165,250 +1258,260 @@ function Explorer() {
                           )}
                         </h2>
                       </div>
-                      <div className="export-actions">
-                        {(["csv", "json"] as const).map((kind) => (
+                    </div>
+                    <details
+                      className="search-panel disclosure"
+                      ref={searchPanelRef}
+                    >
+                      <summary>
+                        <Search size={18} />
+                        <span>{t("searchFilters")}</span>
+                        {chips.length > 0 && (
+                          <span className="filter-count">
+                            {fmt(chips.length)}
+                          </span>
+                        )}
+                        <ChevronDown size={18} className="disclosure-chevron" />
+                      </summary>
+                      <div
+                        className="status-tabs"
+                        role="group"
+                        aria-label={t("status")}
+                      >
+                        {["", ...statuses].map((status) => (
                           <button
-                            key={kind}
-                            className="button secondary small"
-                            disabled={!filtered.length}
-                            onClick={() => exportData(filtered, kind)}
-                            aria-label={t("export") + " " + kind.toUpperCase()}
+                            key={status}
+                            className={
+                              filters.status === status ? "active-tab" : ""
+                            }
+                            onClick={() => setFilter("status", status)}
+                            aria-pressed={filters.status === status}
                           >
-                            <ArrowDownToLine size={15} />
-                            {kind.toUpperCase()}
+                            {t(status || "all")}
                           </button>
                         ))}
                       </div>
-                    </div>
-                    <div
-                      className="status-tabs"
-                      role="group"
-                      aria-label={t("status")}
-                    >
-                      {["", ...statuses].map((status) => (
-                        <button
-                          key={status}
-                          className={
-                            filters.status === status ? "active-tab" : ""
-                          }
-                          onClick={() => setFilter("status", status)}
-                          aria-pressed={filters.status === status}
-                        >
-                          {t(status || "all")}
-                          <span>
-                            {fmt(
-                              status
-                                ? latest.filter((n) => n.status === status)
-                                    .length
-                                : latest.length,
+                      <div className="search-controls">
+                        <label className="search-field">
+                          <Search size={20} />
+                          <input
+                            ref={searchRef}
+                            type="search"
+                            value={filters.q}
+                            onChange={(e) => setFilter("q", e.target.value)}
+                            aria-label={t("search")}
+                            placeholder={t("searchPlaceholder")}
+                          />
+                          <kbd>/</kbd>
+                        </label>
+                        <div className="filter-row">
+                          {selectFilter(
+                            "region",
+                            "region",
+                            options.regions,
+                            "allRegions",
+                          )}
+                          {selectFilter(
+                            "category",
+                            "category",
+                            options.categories,
+                            "allCategories",
+                          )}
+                          <button
+                            className={
+                              "button secondary filter-button " +
+                              (advanced ? "on" : "")
+                            }
+                            onClick={() => setAdvanced(!advanced)}
+                            aria-expanded={advanced}
+                            aria-controls="advanced-filters"
+                          >
+                            <SlidersHorizontal size={17} />
+                            {t("moreFilters")}
+                            {chips.length > 0 && (
+                              <span className="filter-count">
+                                {chips.length}
+                              </span>
                             )}
-                          </span>
-                        </button>
-                      ))}
-                    </div>
-                    <div className="search-controls">
-                      <label className="search-field">
-                        <Search size={20} />
-                        <input
-                          ref={searchRef}
-                          type="search"
-                          value={filters.q}
-                          onChange={(e) => setFilter("q", e.target.value)}
-                          aria-label={t("search")}
-                          placeholder={t("searchPlaceholder")}
-                        />
-                        <kbd>/</kbd>
-                      </label>
-                      <div className="filter-row">
-                        {selectFilter(
-                          "region",
-                          "region",
-                          options.regions,
-                          "allRegions",
-                        )}
-                        {selectFilter(
-                          "category",
-                          "category",
-                          options.categories,
-                          "allCategories",
-                        )}
-                        <button
-                          className={
-                            "button secondary filter-button " +
-                            (advanced ? "on" : "")
-                          }
-                          onClick={() => setAdvanced(!advanced)}
-                          aria-expanded={advanced}
-                          aria-controls="advanced-filters"
-                        >
-                          <SlidersHorizontal size={17} />
-                          {t("moreFilters")}
-                          {chips.length > 0 && (
-                            <span className="filter-count">{chips.length}</span>
-                          )}
-                        </button>
-                      </div>
-                      {advanced && (
-                        <div className="advanced-filters" id="advanced-filters">
-                          <label className="field">
-                            {t("searchMode")}
-                            <select
-                              value={filters.match}
-                              onChange={(e) =>
-                                setFilter("match", e.target.value)
-                              }
-                            >
-                              {[
-                                ["all", "allWords"],
-                                ["any", "anyWords"],
-                                ["phrase", "phrase"],
-                              ].map(([v, label]) => (
-                                <option key={v} value={v}>
-                                  {t(label)}
-                                </option>
-                              ))}
-                            </select>
-                          </label>
-                          <label className="field">
-                            {t("searchScope")}
-                            <select
-                              value={filters.scope}
-                              onChange={(e) =>
-                                setFilter("scope", e.target.value)
-                              }
-                            >
-                              {[
-                                ["all", "allFields"],
-                                ["title", "title"],
-                                ["buyer", "buyer"],
-                                ["supplier", "supplier"],
-                                ["description", "description"],
-                              ].map(([v, label]) => (
-                                <option key={v} value={v}>
-                                  {t(label)}
-                                </option>
-                              ))}
-                            </select>
-                          </label>
-                          <label className="field">
-                            {t("buyer")}
-                            <input
-                              list="buyer-options"
-                              value={filters.buyer}
-                              onChange={(e) =>
-                                setFilter("buyer", e.target.value)
-                              }
-                              placeholder={t("all")}
-                            />
-                            <datalist id="buyer-options">
-                              {options.buyers.map((name) => (
-                                <option key={name} value={name} />
-                              ))}
-                            </datalist>
-                          </label>
-                          {selectFilter(
-                            "buyerType",
-                            "buyerType",
-                            options.buyerTypes,
-                          )}
-                          {selectFilter(
-                            "procedure",
-                            "procedure",
-                            options.procedures,
-                          )}
-                          <label className="field">
-                            {t("cpv")}
-                            <input
-                              inputMode="numeric"
-                              value={filters.cpv}
-                              onChange={(e) => setFilter("cpv", e.target.value)}
-                              placeholder={t("cpvHint")}
-                            />
-                          </label>
-                          <label className="field">
-                            {t("valueKind")}
-                            <select
-                              value={filters.valueKind}
-                              onChange={(e) =>
-                                setFilter("valueKind", e.target.value)
-                              }
-                            >
-                              <option value="estimate">{t("estimate")}</option>
-                              <option value="award">{t("award")}</option>
-                            </select>
-                          </label>
-                          {(["min", "max"] as const).map((key) => (
-                            <label className="field" key={key}>
-                              {t(key)}
-                              <input
-                                type="number"
-                                min="0"
-                                value={filters[key]}
-                                placeholder={t("noLimit")}
-                                onChange={(e) => setFilter(key, e.target.value)}
-                              />
-                            </label>
-                          ))}
-                          <label className="field">
-                            {t("valueKnown")}
-                            <select
-                              value={filters.valueKnown}
-                              onChange={(e) =>
-                                setFilter("valueKnown", e.target.value)
-                              }
-                            >
-                              <option value="any">{t("all")}</option>
-                              <option value="reported">{t("reported")}</option>
-                              <option value="missing">{t("missing")}</option>
-                            </select>
-                          </label>
-                          <label className="field">
-                            {t("period")}
-                            <select
-                              value={filters.period}
-                              onChange={(e) =>
-                                setFilter("period", e.target.value)
-                              }
-                            >
-                              <option value="">{t("entire")}</option>
-                              {[7, 30, 90, 180].map((days) => (
-                                <option key={days} value={days}>
-                                  {t("days", { count: days })}
-                                </option>
-                              ))}
-                            </select>
-                          </label>
-                          {selectFilter("signal", "signal", signals)}
-                          {(
-                            [
-                              "publishedFrom",
-                              "publishedTo",
-                              "deadlineFrom",
-                              "deadlineTo",
-                            ] as const
-                          ).map((key) => (
-                            <label className="field" key={key}>
-                              {t(key)}
-                              <input
-                                type="date"
-                                value={filters[key]}
-                                onChange={(e) => setFilter(key, e.target.value)}
-                              />
-                            </label>
-                          ))}
-                          <label className="check-filter">
-                            <input
-                              type="checkbox"
-                              checked={filters.includeEarlier}
-                              onChange={(e) =>
-                                setFilter("includeEarlier", e.target.checked)
-                              }
-                            />
-                            {t("includeEarlier")}
-                          </label>
-                          <p className="filter-note">{t("filterNote")}</p>
+                          </button>
                         </div>
-                      )}
+                        {advanced && (
+                          <div
+                            className="advanced-filters"
+                            id="advanced-filters"
+                          >
+                            <label className="field">
+                              {t("searchMode")}
+                              <select
+                                value={filters.match}
+                                onChange={(e) =>
+                                  setFilter("match", e.target.value)
+                                }
+                              >
+                                {[
+                                  ["all", "allWords"],
+                                  ["any", "anyWords"],
+                                  ["phrase", "phrase"],
+                                ].map(([v, label]) => (
+                                  <option key={v} value={v}>
+                                    {t(label)}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                            <label className="field">
+                              {t("searchScope")}
+                              <select
+                                value={filters.scope}
+                                onChange={(e) =>
+                                  setFilter("scope", e.target.value)
+                                }
+                              >
+                                {[
+                                  ["all", "allFields"],
+                                  ["title", "title"],
+                                  ["buyer", "buyer"],
+                                  ["supplier", "supplier"],
+                                  ["description", "description"],
+                                ].map(([v, label]) => (
+                                  <option key={v} value={v}>
+                                    {t(label)}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                            <label className="field">
+                              {t("buyer")}
+                              <input
+                                list="buyer-options"
+                                value={filters.buyer}
+                                onChange={(e) =>
+                                  setFilter("buyer", e.target.value)
+                                }
+                                placeholder={t("all")}
+                              />
+                              <datalist id="buyer-options">
+                                {options.buyers.map((name) => (
+                                  <option key={name} value={name} />
+                                ))}
+                              </datalist>
+                            </label>
+                            {selectFilter(
+                              "buyerType",
+                              "buyerType",
+                              options.buyerTypes,
+                            )}
+                            {selectFilter(
+                              "procedure",
+                              "procedure",
+                              options.procedures,
+                            )}
+                            <label className="field">
+                              {t("cpv")}
+                              <input
+                                inputMode="numeric"
+                                value={filters.cpv}
+                                onChange={(e) =>
+                                  setFilter("cpv", e.target.value)
+                                }
+                                placeholder={t("cpvHint")}
+                              />
+                            </label>
+                            <label className="field">
+                              {t("valueKind")}
+                              <select
+                                value={filters.valueKind}
+                                onChange={(e) =>
+                                  setFilter("valueKind", e.target.value)
+                                }
+                              >
+                                <option value="estimate">
+                                  {t("estimate")}
+                                </option>
+                                <option value="award">{t("award")}</option>
+                              </select>
+                            </label>
+                            {(["min", "max"] as const).map((key) => (
+                              <label className="field" key={key}>
+                                {t(key)}
+                                <input
+                                  type="number"
+                                  min="0"
+                                  value={filters[key]}
+                                  placeholder={t("noLimit")}
+                                  onChange={(e) =>
+                                    setFilter(key, e.target.value)
+                                  }
+                                />
+                              </label>
+                            ))}
+                            <label className="field">
+                              {t("valueKnown")}
+                              <select
+                                value={filters.valueKnown}
+                                onChange={(e) =>
+                                  setFilter("valueKnown", e.target.value)
+                                }
+                              >
+                                <option value="any">{t("all")}</option>
+                                <option value="reported">
+                                  {t("reported")}
+                                </option>
+                                <option value="missing">{t("missing")}</option>
+                              </select>
+                            </label>
+                            <label className="field">
+                              {t("period")}
+                              <select
+                                value={filters.period}
+                                onChange={(e) =>
+                                  setFilter("period", e.target.value)
+                                }
+                              >
+                                <option value="">{t("entire")}</option>
+                                {[7, 30, 90, 180].map((days) => (
+                                  <option key={days} value={days}>
+                                    {t("days", { count: days })}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                            {selectFilter("signal", "signal", signals)}
+                            {(
+                              [
+                                "publishedFrom",
+                                "publishedTo",
+                                "deadlineFrom",
+                                "deadlineTo",
+                              ] as const
+                            ).map((key) => (
+                              <label className="field" key={key}>
+                                {t(key)}
+                                <input
+                                  type="date"
+                                  value={filters[key]}
+                                  onChange={(e) =>
+                                    setFilter(key, e.target.value)
+                                  }
+                                />
+                              </label>
+                            ))}
+                            <label className="check-filter">
+                              <input
+                                type="checkbox"
+                                checked={filters.includeEarlier}
+                                onChange={(e) =>
+                                  setFilter("includeEarlier", e.target.checked)
+                                }
+                              />
+                              {t("includeEarlier")}
+                            </label>
+                            <p className="filter-note">{t("filterNote")}</p>
+                          </div>
+                        )}
+                      </div>
+                    </details>
+                    <div className="active-search">
                       {rangeInvalid && (
                         <p className="range-error" role="alert">
                           {t("invalidRange")}
@@ -1457,8 +1560,26 @@ function Explorer() {
                       <span role="status" aria-live="polite">
                         {t("matches", { count: fmt(filtered.length) })}
                       </span>
-                      <div>
-                        <label>
+                    </div>
+                    <details className="sort-panel disclosure">
+                      <summary>
+                        <SlidersHorizontal size={18} />
+                        <span>{t("sortDisplay")}</span>
+                        <span className="sort-current">
+                          {t(
+                            sort === "deadline"
+                              ? "deadlineSoonest"
+                              : sort === "buyer"
+                                ? "sortBuyer"
+                                : sort === "title"
+                                  ? "sortTitle"
+                                  : sort,
+                          )}
+                        </span>
+                        <ChevronDown size={18} className="disclosure-chevron" />
+                      </summary>
+                      <div className="sort-controls">
+                        <label className="field">
                           {t("sort")}
                           <select
                             value={sort}
@@ -1479,8 +1600,8 @@ function Explorer() {
                             ))}
                           </select>
                         </label>
-                        <label>
-                          <span className="sr-only">{t("perPage")}</span>
+                        <label className="field">
+                          <span>{t("perPage")}</span>
                           <select
                             aria-label={t("perPage")}
                             value={pageSize}
@@ -1495,8 +1616,24 @@ function Explorer() {
                             ))}
                           </select>
                         </label>
+                        <div className="export-actions">
+                          {(["csv", "json"] as const).map((kind) => (
+                            <button
+                              key={kind}
+                              className="button secondary small"
+                              disabled={!filtered.length}
+                              onClick={() => exportData(filtered, kind)}
+                              aria-label={
+                                t("export") + " " + kind.toUpperCase()
+                              }
+                            >
+                              <ArrowDownToLine size={15} />
+                              {kind.toUpperCase()}
+                            </button>
+                          ))}
+                        </div>
                       </div>
-                    </div>
+                    </details>
                     <div className="notice-table">
                       <div className="table-header">
                         <span>{t("noticeBuyer")}</span>
@@ -1987,6 +2124,7 @@ function Explorer() {
         <NoticeDialog
           n={selected}
           companies={companies}
+          notices={notices}
           saved={saved.includes(selected.id)}
           onSave={() => toggleSave(selected.id)}
           onClose={() => setSelectedId(null)}

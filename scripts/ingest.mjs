@@ -2,7 +2,11 @@ import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import { normalize, markSuperseded } from "./lib/normalize.mjs";
+import {
+  normalize,
+  markSuperseded,
+  reuseEnrichment,
+} from "./lib/normalize.mjs";
 import { jsonRequest } from "./lib/http.mjs";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const dir = path.join(root, "public/data");
@@ -47,6 +51,7 @@ while (true) {
     "https://api.hankintailmoitukset.fi/avp/eformnotices/docs/search",
     {
       method: "POST",
+      redirect: "error",
       headers: {
         "Content-Type": "application/json",
         "Ocp-Apim-Subscription-Key": key,
@@ -74,17 +79,7 @@ while (true) {
     const notice = normalize(raw, now);
     if (notice.published >= cutoff) {
       const old = notices.get(notice.id);
-      notices.set(
-        notice.id,
-        old?.modified === notice.modified && old.fullContentAvailable
-          ? {
-              ...old,
-              status: notice.status,
-              superseded: false,
-              relatedIds: notice.relatedIds,
-            }
-          : notice,
-      );
+      notices.set(notice.id, reuseEnrichment(notice, old));
     }
   }
   fetched += result.value.length;

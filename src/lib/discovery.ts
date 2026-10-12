@@ -83,8 +83,11 @@ export function searchText(n: Notice, scope: string): string {
   const fields: Record<string, string> = {
     title: n.title,
     buyer: n.buyer + " " + (n.businessId ?? ""),
-    supplier: n.winners.join(" "),
-    description: n.description,
+    supplier: [...n.winners, ...n.lots.flatMap((l) => l.winners)].join(" "),
+    description: [
+      n.description,
+      ...n.lots.map((l) => l.description || ""),
+    ].join(" "),
   };
   return fold(
     fields[scope] ??
@@ -92,6 +95,7 @@ export function searchText(n: Notice, scope: string): string {
         n.noticeNumber,
         n.id,
         ...Object.values(fields),
+        ...n.lots.map((l) => l.title),
         ...n.cpvCodes,
         n.category,
         ...n.regions,

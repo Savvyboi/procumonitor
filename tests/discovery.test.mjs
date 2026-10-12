@@ -21,6 +21,7 @@ const notice = {
   buyer: "Esimerkkikunta",
   businessId: "1234567-8",
   winners: ["Malliyritys Oy"],
+  lots: [],
   category: "Construction",
   regions: ["Uusimaa", "Pirkanmaa"],
   buyerType: "Municipality",
@@ -276,4 +277,34 @@ test("every translation has Finnish, Swedish and English values", () => {
   assert.equal(translate("sv", "Active"), "Öppen");
   assert.equal(translate("fi", "daysLeft", { count: 4 }), "4 päivää jäljellä");
   assert.equal(translate("en", "Construction"), "Construction");
+});
+
+test("lot titles, descriptions and reported lot awardees are searchable", () => {
+  const n = {
+    ...notice,
+    winners: [],
+    lots: [
+      {
+        title: "Kuljetuspalvelut",
+        description: "Kylmäkuljetukset",
+        winners: ["Lot supplier Oy"],
+      },
+    ],
+  };
+  assert.equal(
+    matchesQuery(searchText(n, "all"), "kuljetuspalvelut", "all"),
+    true,
+  );
+  assert.equal(
+    matchesQuery(searchText(n, "description"), "kylmakuljetukset", "all"),
+    true,
+  );
+  assert.equal(
+    matchesQuery(searchText(n, "supplier"), "lot supplier", "all"),
+    true,
+  );
+  assert.equal(
+    matchesQuery(searchText(n, "buyer"), "lot supplier", "all"),
+    false,
+  );
 });

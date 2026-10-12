@@ -8,6 +8,7 @@ export type Notice = {
   businessId: string | null;
   buyerType: string;
   region: string;
+  regionSource?: "performance" | "buyer" | "unreported";
   regions: string[];
   cpvCodes: string[];
   category: string;
@@ -16,6 +17,12 @@ export type Notice = {
   modified: string;
   deadline: string | null;
   estimatedValue: number | null;
+  plannedValueRange?: {
+    min: number | null;
+    max: number | null;
+    minCurrency: string | null;
+    maxCurrency: string | null;
+  };
   awardedValue: number | null;
   currency: string | null;
   estimatedCurrency: string | null;
@@ -24,8 +31,12 @@ export type Notice = {
   procedure: string;
   flags: string[];
   lots: {
-    id: string;
+    id: string | null;
     title: string;
+    description?: string;
+    cpvCodes?: string[];
+    regions?: string[];
+    deadline?: string | null;
     estimatedValue: number | null;
     awardedValue: number | null;
     estimatedCurrency: string | null;

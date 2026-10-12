@@ -15,7 +15,7 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -30,7 +30,7 @@ jobs:
           HILMA_API_KEY: ${{ secrets.HILMA_API_KEY }}
         run: |
           npm run ingest
-          node scripts/enrich-eforms.mjs
+          node scripts/enrich-eforms.mjs --all
       - name: Refresh weekly invoice aggregates
         if: github.event_name != 'push'
         run: node scripts/ingest-spending.mjs

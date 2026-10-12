@@ -5,6 +5,7 @@ import {
   numberOrNull,
   getFlags,
   markSuperseded,
+  reuseEnrichment,
   toCSV,
 } from "../scripts/lib/normalize.mjs";
 const now = new Date("2026-10-11T12:00:00Z");
@@ -196,4 +197,104 @@ test("procurement plans use the official public plan route", () => {
     normalize({ ...raw, isPlan: true, planId: 789 }, now).sourceUrl,
     "https://www.hankintailmoitukset.fi/fi/public/plan/789",
   );
+});
+
+test("CSV retains full public identifiers, multiple regions, source relationships and nested lots", async () => {
+  const { parse } = await import("csv-parse/sync");
+  const n = normalize(
+    {
+      ...raw,
+      nutsCodes: "FI1C1 FI1D7",
+      previousSearchIds: ["EF-earlier"],
+      lots: [
+        {
+          id: "LOT-1",
+          titleFi: 'Title "with quotes"',
+          winnerOrganisations: "Supplier Oy",
+        },
+      ],
+    },
+    now,
+  );
+  const [row] = parse(toCSV([n]), { columns: true, bom: true });
+  assert.equal(row.noticeNumber, n.noticeNumber);
+  assert.equal(row.regions, "Varsinais-Suomi; Lappi");
+  assert.equal(row.cpvCodes, n.cpvCodes.join("; "));
+  assert.equal(row.modified, n.modified);
+  assert.equal(row.relatedIds, "EF-earlier");
+  assert.deepEqual(JSON.parse(row.lots), n.lots);
+});
+
+test("search summaries retain lot descriptions, classifications, deadlines and performance regions", () => {
+  const n = normalize(
+    {
+      ...raw,
+      cpvCodes: "",
+      lots: [
+        {
+          id: "LOT-1",
+          descriptionFi: "Osan virallinen kuvaus",
+          cpvCodes: "72000000",
+          nutsCodes: "FI1D7",
+          deadline: "2026-10-20T12:00:00Z",
+          winnerOrganisations: "Supplier Oy",
+        },
+      ],
+    },
+    now,
+  );
+  assert.equal(n.lots[0].description, "Osan virallinen kuvaus");
+  assert.deepEqual(n.lots[0].cpvCodes, ["72000000"]);
+  assert.equal(n.lots[0].deadline, "2026-10-20T12:00:00Z");
+  assert.deepEqual(n.regions, ["Lappi"]);
+  assert.equal(n.regionSource, "performance");
+  assert.equal(n.category, "IT & software");
+  assert.deepEqual(n.winners, ["Supplier Oy"]);
+});
+test("summary refresh fills new lot fields without losing unchanged cached eForms", () => {
+  const original = normalize({ ...raw, lots: [{ id: "LOT-1" }] }, now);
+  const cached = {
+    ...original,
+    fullContentAvailable: true,
+    contentVersion: 2,
+    description: "Full official text",
+    estimatedValue: 200,
+    estimatedCurrency: "EUR",
+    lots: [
+      {
+        ...original.lots[0],
+        description: "Full lot text",
+        estimatedValue: 100,
+        estimatedCurrency: "EUR",
+      },
+    ],
+  };
+  const fresh = normalize(
+    {
+      ...raw,
+      lots: [
+        {
+          id: "LOT-1",
+          descriptionFi: "Summary text",
+          cpvCodes: "72000000",
+          nutsCodes: "FI1D7",
+          deadline: "2026-10-20T12:00:00Z",
+        },
+      ],
+    },
+    now,
+  );
+  const n = reuseEnrichment(fresh, cached);
+  assert.equal(n.fullContentAvailable, true);
+  assert.equal(n.contentVersion, 2);
+  assert.equal(n.description, "Full official text");
+  assert.equal(n.estimatedValue, 200);
+  assert.equal(n.lots[0].estimatedValue, 100);
+  assert.equal(n.lots[0].description, "Full lot text");
+  assert.deepEqual(n.lots[0].cpvCodes, ["72000000"]);
+  assert.deepEqual(n.regions, ["Lappi"]);
+  assert.equal(n.lots[0].deadline, "2026-10-20T12:00:00Z");
+  const amended = { ...fresh, modified: "2026-10-12T12:00:00Z" };
+  assert.equal(reuseEnrichment(amended, cached), amended);
+  assert.equal(amended.fullContentAvailable, false);
 });

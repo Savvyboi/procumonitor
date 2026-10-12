@@ -97,7 +97,34 @@ for (const type of [...new Set(data.notices.map((n) => n.buyerType))])
     data.notices.filter((n) => n.buyerType === type),
     "feeds/buyers/" + slug(type) + ".xml",
   );
+const valueHtml = (value, currency) =>
+  '<span data-value="' +
+  xml(value ?? "") +
+  '" data-currency="' +
+  xml(currency ?? "") +
+  '">' +
+  xml(value === null ? "Ei ilmoitettu" : value + " " + (currency || "")) +
+  "</span>";
 for (const n of data.notices) {
+  const lotsHtml = n.lots.length
+    ? '<h2 data-i18n="lots">Osat</h2>' +
+      n.lots
+        .map(
+          (l) =>
+            '<section class="lot"><h3>' +
+            xml(l.title || l.id) +
+            '</h3><p class="description">' +
+            xml(l.description || "") +
+            "</p><p>" +
+            xml(l.winners.join("; ")) +
+            '</p><p><span data-i18n="estimate">Arvioitu arvo</span>: ' +
+            valueHtml(l.estimatedValue, l.estimatedCurrency) +
+            '<br><span data-i18n="award">Sopimusten arvo</span>: ' +
+            valueHtml(l.awardedValue, l.awardedCurrency) +
+            "</p></section>",
+        )
+        .join("")
+    : "";
   const html =
     '<!doctype html><html lang="fi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>' +
     xml(n.title) +
@@ -121,7 +148,25 @@ for (const n of data.notices) {
         ? "Ei ilmoitettu"
         : n.estimatedValue + " " + (n.estimatedCurrency || ""),
     ) +
-    '</span></p><div class="actions" data-pagefind-ignore><a href="../?notice=' +
+    '</span></p><p data-pagefind-ignore><span data-i18n="award">Sopimusten arvo</span>: ' +
+    valueHtml(n.awardedValue, n.awardedCurrency) +
+    "</p>" +
+    (n.plannedValueRange
+      ? '<p data-pagefind-ignore><span data-i18n="plannedRange">Suunniteltu arvo (vaihteluväli)</span>: ' +
+        valueHtml(n.plannedValueRange.min, n.plannedValueRange.minCurrency) +
+        " – " +
+        valueHtml(n.plannedValueRange.max, n.plannedValueRange.maxCurrency) +
+        "</p>"
+      : "") +
+    "<p>" +
+    xml(
+      [n.noticeNumber, n.businessId, ...n.cpvCodes, ...n.winners]
+        .filter(Boolean)
+        .join(" · "),
+    ) +
+    "</p>" +
+    lotsHtml +
+    '<div class="actions" data-pagefind-ignore><a href="../?notice=' +
     encodeURIComponent(n.id) +
     '" data-explorer-link data-i18n="open">Avaa hankintahaussa</a><a href="' +
     xml(n.sourceUrl) +

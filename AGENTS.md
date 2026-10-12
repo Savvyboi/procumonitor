@@ -71,30 +71,32 @@ If these definitions change, update the implementation, tests and public methodo
 
 ## Pipeline expectations
 
-The current defaults are a six-hour schedule, a rolling 180-day notice window, a two-day differential overlap, at most 200 full eForms enrichments per run, at most 100 PRH lookups per run with a 30-day cache, and invoice refreshes at most weekly. These are implementation defaults that may be adjusted deliberately.
+The current defaults are a six-hour schedule, a rolling 180-day notice window, a two-day differential overlap, all pending full-content enrichments in checkpointed batches of 50 (two concurrent reads by default; a manual run without `--all` is limited to 200), at most 100 PRH lookups per run with a 30-day cache, and invoice refreshes at most weekly. These are implementation defaults that may be adjusted deliberately.
 
 - Paginate completely within explicit safety bounds. Respect rate limits and use retries/backoff for transient failures.
 - Preserve the last valid snapshot and deployed site when ingestion fails. Never silently replace good data with an empty or partial successful-looking refresh.
-- Reuse cached enrichment when source records have not changed. Preserve meaningful publication and modification dates.
+- Reuse cached enrichment when source records have not changed. Revisit full content when the extractor version changes; process the oldest unchecked records first. Scheduled runs use `--all`; read eForms and plans in bulk with at most 50 repeated `id` parameters, validate returned identities, checkpoint every 50 records and retry unavailable records after seven days. Preserve meaningful publication and modification dates.
+- Search-summary ingestion retains lot descriptions, CPV classifications, performance regions and lot deadlines directly. Preserve unchanged cached XML enrichment while merging newly retained summary fields.
+- Full-content enrichment covers eForms, legacy notices and procurement plans. Preserve planning value ranges separately from exact estimates; never turn legacy template defaults, ranges or withheld fields into exact values. eForms enrichment retains selected public procurement fields, including original lot descriptions and awardees. Resolve awards only through explicit settled-contract and tender references; require complete compatible currencies for lot totals and never attribute group tender values to one lot.
 - Avoid refreshing large datasets during unrelated interface or documentation changes.
 - Scheduled refreshes can create bot commits on `main`; sync before pushing if a refresh may have advanced the branch.
 
 ## Where to work
 
-| Area | Files |
-| --- | --- |
-| Application and interface | `src/App.tsx`, `src/styles.css` |
-| Public client schema | `src/types.ts` |
-| Hilma search ingestion and PRH enrichment | `scripts/ingest.mjs` |
-| Full eForms ingestion and parsing | `scripts/enrich-eforms.mjs`, `scripts/lib/eforms.mjs` |
-| Invoice aggregation | `scripts/ingest-spending.mjs` |
-| Normalization, categories, regions, indicators, export safety | `scripts/lib/normalize.mjs` |
-| Request retries and timeouts | `scripts/lib/http.mjs` |
-| Exports, feeds, shards and static search pages | `scripts/build-artifacts.mjs` |
-| Committed public snapshots | `public/data/` |
-| Refresh and deployment workflow | `.github/workflows/deploy.yml` |
-| Data behavior tests | `tests/normalize.test.mjs` |
-| Setup, source coverage and methodology | `README.md` |
+| Area                                                          | Files                                                                                 |
+| ------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| Application and interface                                     | `src/App.tsx`, `src/styles.css`                                                       |
+| Public client schema                                          | `src/types.ts`                                                                        |
+| Hilma search ingestion and PRH enrichment                     | `scripts/ingest.mjs`                                                                  |
+| Full eForms ingestion and parsing                             | `scripts/enrich-eforms.mjs`, `scripts/lib/eforms.mjs`, `scripts/lib/full-content.mjs` |
+| Invoice aggregation                                           | `scripts/ingest-spending.mjs`                                                         |
+| Normalization, categories, regions, indicators, export safety | `scripts/lib/normalize.mjs`                                                           |
+| Request retries and timeouts                                  | `scripts/lib/http.mjs`                                                                |
+| Exports, feeds, shards and static search pages                | `scripts/build-artifacts.mjs`                                                         |
+| Committed public snapshots                                    | `public/data/`                                                                        |
+| Refresh and deployment workflow                               | `.github/workflows/deploy.yml`                                                        |
+| Data behavior tests                                           | `tests/normalize.test.mjs`                                                            |
+| Setup, source coverage and methodology                        | `README.md`                                                                           |
 
 ## Working and verification
 
@@ -113,11 +115,13 @@ A normal build uses the committed snapshot and needs no Hilma key. Refresh comma
 For data or pipeline changes, add focused tests for material behavior such as missing values, currency compatibility, version relationships, status transitions or malformed source data. Run `npm test` and `npm run build` for application changes. For interface changes, also verify the affected interactions, keyboard use, mobile layout and repository-subpath links in a browser. Documentation-only changes need a content and diff review rather than a full ingestion or build.
 
 Preserve unrelated user changes. Keep this file and the public methodology aligned with implemented behavior. Describe any unimplemented feature or unsupported data relationship honestly; do not present roadmap items as working capabilities.
+
 ## Interface and branding
 
 - Brand: **Tilimyyrä**, with a European mole (kontiainen) mascot in public/mole.svg.
 - Palette: brown, forest green and cream in light mode; blue-black in dark mode. Preserve readable contrast in both.
 - Finnish is the default interface; Swedish and English are available throughout. Keep src/i18n.ts translations complete and preserve the original language of official notice text.
 - Keep language, themes and bookmarks persistent where browser storage is available. Preserve migration of bookmarks from the old Avoin storage key.
+- Search/filter, sort/display/download and dataset overview panels start collapsed. Keep active filter chips visible and preserve the keyboard shortcut that opens and focuses search.
 - Discovery filters and sorting belong in shareable URLs. src/lib/discovery.ts owns matching, Helsinki date boundaries and currency-compatible sorting; test material behavior in tests/discovery.test.mjs.
-- Static full-text search and indexed notice pages use scripts/templates/search.html and public/static-pages.*; keep their branding, language controls and themes aligned with the React interface.
+- Static full-text search and indexed notice pages use scripts/templates/search.html and public/static-pages.\*; keep their branding, language controls and themes aligned with the React interface.

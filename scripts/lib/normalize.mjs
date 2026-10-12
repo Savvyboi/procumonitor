@@ -120,6 +120,17 @@ export function normalize(raw, now = new Date()) {
   const lots = (raw.lots || []).map((l) => ({
     id: l.id,
     title: localized(l, "title"),
+    description: localized(l, "description"),
+    cpvCodes: codes(l.cpvCodes),
+    regions: [
+      ...new Set(
+        String(l.nutsCodes || "")
+          .split(/[ ,;]+/)
+          .filter(Boolean)
+          .map((c) => REGIONS[c] || "Other / nationwide"),
+      ),
+    ],
+    deadline: l.deadline || null,
     estimatedValue: numberOrNull(l.estimatedValue),
     awardedValue: numberOrNull(l.lotResultTotalAmount),
     estimatedCurrency: l.currency || null,
@@ -127,8 +138,16 @@ export function normalize(raw, now = new Date()) {
     bids: numberOrNull(l.receivedTenderCount),
     winners: names(l.winnerOrganisations),
   }));
-  const cpvCodes = codes(raw.cpvCodes);
-  const regionCodes = String(raw.nutsCodes || raw.organisationNutsCode || "")
+  const cpvCodes = [
+    ...new Set([...codes(raw.cpvCodes), ...lots.flatMap((l) => l.cpvCodes)]),
+  ];
+  const performanceNuts = [
+    raw.nutsCodes,
+    ...(raw.lots || []).map((l) => l.nutsCodes),
+  ]
+    .filter(Boolean)
+    .join(" ");
+  const regionCodes = String(performanceNuts || raw.organisationNutsCode || "")
     .split(/[ ,;]/)
     .filter(Boolean);
   const regions = [
@@ -165,6 +184,11 @@ export function normalize(raw, now = new Date()) {
         "pub-undert": "Public undertaking",
       }[raw.organisationType] || "Other buyer",
     region: regions[0] || "Other / nationwide",
+    regionSource: performanceNuts
+      ? "performance"
+      : raw.organisationNutsCode
+        ? "buyer"
+        : "unreported",
     regions: regions.length ? regions : ["Other / nationwide"],
     cpvCodes,
     category: categoryFor(cpvCodes),
@@ -177,7 +201,12 @@ export function normalize(raw, now = new Date()) {
     currency: raw.currency || raw.noticeResultTotalAmountCurrency || null,
     estimatedCurrency: raw.currency || null,
     awardedCurrency: raw.noticeResultTotalAmountCurrency || null,
-    winners: names(raw.winnerOrganisations),
+    winners: [
+      ...new Set([
+        ...names(raw.winnerOrganisations),
+        ...lots.flatMap((l) => l.winners),
+      ]),
+    ],
     procedure: raw.procedureType || "Not specified",
     flags: [],
     lots,
@@ -201,6 +230,58 @@ export function normalize(raw, now = new Date()) {
   n.flags = getFlags(n);
   return n;
 }
+export function reuseEnrichment(notice, cached) {
+  if (!cached?.fullContentAvailable || cached.modified !== notice.modified)
+    return notice;
+  const unique = (values) => [...new Set(values)];
+  const freshLots = new Map(notice.lots.map((l) => [l.id, l]));
+  const lots = cached.lots
+    .map((old) => {
+      const fresh = freshLots.get(old.id);
+      freshLots.delete(old.id);
+      if (!fresh) return old;
+      return {
+        ...fresh,
+        ...old,
+        description: old.description || fresh.description,
+        cpvCodes: unique([...(fresh.cpvCodes || []), ...(old.cpvCodes || [])]),
+        regions: unique([...(fresh.regions || []), ...(old.regions || [])]),
+        deadline: old.deadline || fresh.deadline,
+        winners: unique([...fresh.winners, ...old.winners]),
+      };
+    })
+    .concat([...freshLots.values()]);
+  const cpvCodes = unique([...notice.cpvCodes, ...cached.cpvCodes]);
+  const performance = notice.regionSource === "performance";
+  const regions = performance
+    ? unique([
+        ...notice.regions,
+        ...(cached.regionSource === "performance" ? cached.regions : []),
+      ])
+    : cached.regions;
+  const merged = {
+    ...notice,
+    ...cached,
+    status: notice.status,
+    superseded: false,
+    relatedIds: notice.relatedIds,
+    lots,
+    cpvCodes,
+    category: categoryFor(cpvCodes),
+    regions,
+    region: regions[0],
+    regionSource: performance
+      ? "performance"
+      : cached.regionSource || notice.regionSource,
+    winners: unique([
+      ...notice.winners,
+      ...cached.winners,
+      ...lots.flatMap((l) => l.winners),
+    ]),
+  };
+  merged.flags = getFlags(merged);
+  return merged;
+}
 export function markSuperseded(notices) {
   const superseded = new Set(notices.flatMap((n) => n.relatedIds || []));
   return notices.map((n) => ({ ...n, superseded: superseded.has(n.id) }));
@@ -215,14 +296,19 @@ export function csvCell(v) {
 export function toCSV(notices) {
   const keys = [
     "id",
+    "noticeId",
+    "noticeNumber",
     "title",
     "buyer",
     "businessId",
     "buyerType",
     "region",
+    "regions",
+    "cpvCodes",
     "category",
     "status",
     "published",
+    "modified",
     "deadline",
     "estimatedValue",
     "awardedValue",
@@ -231,6 +317,12 @@ export function toCSV(notices) {
     "currency",
     "winners",
     "flags",
+    "procedure",
+    "documentsUrl",
+    "fullContentAvailable",
+    "plannedValueRange",
+    "relatedIds",
+    "lots",
     "sourceUrl",
   ];
   return (
@@ -240,7 +332,15 @@ export function toCSV(notices) {
     notices
       .map((n) =>
         keys
-          .map((k) => csvCell(Array.isArray(n[k]) ? n[k].join("; ") : n[k]))
+          .map((k) =>
+            csvCell(
+              k === "lots" || k === "plannedValueRange"
+                ? JSON.stringify(n[k])
+                : Array.isArray(n[k])
+                  ? n[k].join("; ")
+                  : n[k],
+            ),
+          )
           .join(","),
       )
       .join("\r\n")

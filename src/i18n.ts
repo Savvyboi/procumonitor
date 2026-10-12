@@ -2,6 +2,51 @@ import { createContext, useContext } from "react";
 export type Language = "fi" | "sv" | "en";
 export const locales = { fi: "fi-FI", sv: "sv-FI", en: "en-GB" };
 export const messages: Record<string, [string, string, string]> = {
+  overview: [
+    "Aineisto ja toimialat",
+    "Material och branscher",
+    "Snapshot and categories",
+  ],
+  searchFilters: [
+    "Haku ja suodattimet",
+    "Sökning och filter",
+    "Search and filters",
+  ],
+  sortDisplay: [
+    "Järjestys ja näyttö",
+    "Sortering och visning",
+    "Sort and display",
+  ],
+  outsideSnapshot: [
+    "Ei tässä aineistossa",
+    "Ingår inte i detta material",
+    "Outside this snapshot",
+  ],
+  previousNotices: [
+    "Aiemmat ilmoitukset",
+    "Tidigare annonser",
+    "Previous notices",
+  ],
+  plannedRange: [
+    "Suunniteltu arvo (vaihteluväli)",
+    "Planerat värde (intervall)",
+    "Planned value range",
+  ],
+  fullContent: [
+    "Tietoja on täydennetty Hilman täydestä ilmoitusaineistosta. Alkuperäinen ilmoitus sisältää kaikki viralliset tiedot.",
+    "Uppgifter har kompletterats från Hilmas fullständiga annonsmaterial. Originalannonsen innehåller alla officiella uppgifter.",
+    "Details have been enriched from Hilma full notice content. The original notice contains the complete official record.",
+  ],
+  summaryContent: [
+    "Tiedot perustuvat Hilman hakuyhteenvetoon. Täydellisiä ilmoitustietoja ei ole vielä tuotu.",
+    "Uppgifterna bygger på Hilmas söksammanfattning. Fullständiga annonsuppgifter har ännu inte importerats.",
+    "Details come from the Hilma search summary. Full notice details have not yet been imported.",
+  ],
+  hilmaCoverage: [
+    "Hilman hakuyhteenvedot: {count} ilmoitusta. Täydestä ilmoitusaineistosta täydennetty: {full} ilmoitusta. Puuttuvia tietoja ei päätellä kuvauksista.",
+    "Hilmas söksammanfattningar: {count} annonser. Kompletterade från fullständiga annonser: {full} annonser. Saknade uppgifter härleds inte från beskrivningar.",
+    "Hilma search summaries: {count} notices. Full-content enrichment: {full} notices. Missing fields are not inferred from descriptions.",
+  ],
   tagline: [
     "Julkiset hankinnat päivänvaloon",
     "Offentliga upphandlingar i dagsljus",
